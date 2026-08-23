@@ -1,0 +1,90 @@
+import { useEffect, useState } from "react";
+import { motion } from "motion/react";
+import { ExternalLink, Eye, File as FileIcon, Image as ImageIcon, X } from "lucide-react";
+import { convertFileSrc, ipc, type ItemDetail } from "@/core/ipc";
+import { formatFullDate, formatSize } from "@/lib/format";
+import { useUi } from "@/stores/ui";
+import { Button } from "@/components/ui/button";
+
+export function QuickLook() {
+  const { quickLookId, setQuickLookId } = useUi();
+  const [detail, setDetail] = useState<ItemDetail | null>(null);
+  const [absPath, setAbsPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!quickLookId) {
+      setDetail(null);
+      setAbsPath(null);
+      return;
+    }
+    let alive = true;
+    void ipc.getItem(quickLookId).then((d) => alive && setDetail(d));
+    void ipc.fileAbsPath(quickLookId).then((p) => alive && setAbsPath(p));
+    return () => {
+      alive = false;
+    };
+  }, [quickLookId]);
+
+  useEffect(() => {
+    if (!quickLookId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setQuickLookId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [quickLookId, setQuickLookId]);
+
+  if (!quickLookId || !detail) return null;
+  const item = detail.item;
+  const src = absPath ? convertFileSrc(absPath) : null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 p-10 backdrop-blur-[2px]"
+      onClick={() => setQuickLookId(null)}
+      role="dialog"
+      aria-label="快速查看"
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.97 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.12, ease: "easeOut" }}
+        className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
+          <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium">{item.title}</span>
+          <Button variant="ghost" size="icon-sm" onClick={() => void ipc.quicklook(item.id)} aria-label="系统快速查看">
+            <Eye className="size-4" />
+          </Button>
+          <Button variant="ghost" size="icon-sm" onClick={() => void ipc.openWithDefault(item.id)} aria-label="用默认应用打开">
+            <ExternalLink className="size-4" />
+          </Button>
+          <Button variant="ghost" size="icon-sm" onClick={() => setQuickLookId(null)} aria-label="关闭">
+            <X className="size-4" />
+          </Button>
+        </div>
+
+        <div className="flex min-h-0 flex-1 items-center justify-center bg-muted/40 p-4">
+          {src && item.mime.startsWith("image/") ? (
+            <img src={src} alt={item.title} className="max-h-full max-w-full object-contain" draggable={false} />
+          ) : src && item.mime === "application/pdf" ? (
+            <embed src={src} type="application/pdf" className="h-full w-full rounded-md" />
+          ) : (
+            <div className="flex flex-col items-center gap-2 p-8 text-center">
+              {item.mime.startsWith("image/") ? (
+                <ImageIcon className="size-12 text-muted-foreground/40" />
+              ) : (
+                <FileIcon className="size-12 text-muted-foreground/40" />
+              )}
+              <p className="text-[13px] text-foreground/80">{item.title}</p>
+              <p className="font-mono text-[11px] text-muted-foreground">
+                {item.mime} · {formatSize(item.size)} · {formatFullDate(item.createdAt)}
+              </p>
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+}
