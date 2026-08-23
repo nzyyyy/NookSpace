@@ -82,7 +82,7 @@ export default function App() {
     void getCurrentWindow()
       .onDragDropEvent(async (event) => {
         if (disposed) return;
-        if (event.payload.type === "drop") {
+        if (event.payload.type === "drop" && event.payload.paths.length > 0) {
           const result = await useLibrary.getState().importPaths(event.payload.paths);
           if (result) {
             toast.success(

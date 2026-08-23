@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { LayoutGroup, MotionConfig, motion } from "motion/react";
 import {
   Check,
   ChevronDown,
@@ -51,6 +52,14 @@ const SMART_VIEWS: { kind: "favorites" | "recent" | "uncollected"; label: string
   { kind: "recent", label: "最近", icon: Clock },
   { kind: "uncollected", label: "未分类", icon: Inbox },
 ];
+
+type CollectionDropZone = "before" | "inside" | "after";
+
+interface CollectionDropTarget {
+  target: Collection;
+  zone: CollectionDropZone;
+  siblings: Collection[];
+}
 
 function SectionLabel({ children, onAdd }: { children: React.ReactNode; onAdd?: () => void }) {
   return (
@@ -114,66 +123,101 @@ function CollectionRows({
   depth = 0,
   activeId,
   collapsed,
+  draggedId,
+  dropTarget,
   onToggle,
   onCreateChild,
   onRename,
   onMove,
   onDelete,
-  onDrop,
+  onDragStart,
+  onDragMove,
+  onDragEnd,
+  onClickCapture,
 }: {
   nodes: CollectionTreeNode<Collection>[];
   depth?: number;
   activeId: string | null;
   collapsed: Set<string>;
+  draggedId: string | null;
+  dropTarget: CollectionDropTarget | null;
   onToggle: (id: string) => void;
   onCreateChild: (id: string) => void;
   onRename: (collection: Collection) => void;
   onMove: (collection: Collection) => void;
   onDelete: (collection: Collection) => void;
-  onDrop: (draggedId: string, target: Collection, zone: "before" | "inside" | "after", siblings: Collection[]) => void;
+  onDragStart: (id: string) => void;
+  onDragMove: (id: string, point: { x: number; y: number }) => void;
+  onDragEnd: (id: string) => void;
+  onClickCapture: (event: React.MouseEvent) => void;
 }) {
   return nodes.map((node, index) => {
     const hasChildren = node.children.length > 0;
     const isCollapsed = collapsed.has(node.id);
+    const isDragging = draggedId === node.id;
+    const targetZone = dropTarget?.target.id === node.id ? dropTarget.zone : null;
     return (
-      <div key={node.id}>
+      <motion.div
+        key={node.id}
+        layout="position"
+        layoutId={`collection-${node.id}`}
+        transition={{ layout: { duration: 0.16, ease: [0.2, 0, 0, 1] } }}
+      >
         <ContextMenu>
           <ContextMenuTrigger asChild>
-            <div
-              draggable
-              onDragStart={(event) => event.dataTransfer.setData("text/x-nookspace-collection", node.id)}
-              onDragOver={(event) => {
-                if (event.dataTransfer.types.includes("text/x-nookspace-collection")) event.preventDefault();
-              }}
-              onDrop={(event) => {
-                const draggedId = event.dataTransfer.getData("text/x-nookspace-collection");
-                if (!draggedId) return;
-                event.preventDefault();
-                const rect = event.currentTarget.getBoundingClientRect();
-                const ratio = (event.clientY - rect.top) / rect.height;
-                onDrop(draggedId, node, ratio < 0.25 ? "before" : ratio > 0.75 ? "after" : "inside", nodes);
-              }}
-              className="flex items-center"
+            <motion.div
+              data-collection-id={node.id}
+              drag="y"
+              dragMomentum={false}
+              dragSnapToOrigin
+              onDragStart={() => onDragStart(node.id)}
+              onDrag={(_, info) => onDragMove(node.id, info.point)}
+              onDragEnd={() => onDragEnd(node.id)}
+              onClickCapture={onClickCapture}
+              whileDrag={{ scale: 1.01 }}
+              className={cn(
+                "relative flex touch-none items-center cursor-grab select-none active:cursor-grabbing",
+                isDragging && "z-20 opacity-60 drop-shadow-sm",
+              )}
               style={{ paddingLeft: depth * 12 }}
             >
-              <button
-                type="button"
-                className="flex size-5 shrink-0 items-center justify-center text-muted-foreground"
-                onClick={() => hasChildren && onToggle(node.id)}
-                aria-label={hasChildren ? (isCollapsed ? "展开集合" : "折叠集合") : undefined}
-                aria-expanded={hasChildren ? !isCollapsed : undefined}
-              >
-                {hasChildren ? (isCollapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />) : null}
-              </button>
-              <div className="min-w-0 flex-1">
-                <SidebarRow
-                  active={activeId === node.id}
-                  onClick={() => useLibrary.getState().setView({ kind: "collection", id: node.id })}
-                  icon={<Folder />}
-                  label={node.name}
+              {targetZone && targetZone !== "inside" ? (
+                <span
+                  className={cn(
+                    "pointer-events-none absolute right-1 z-30 h-0.5 rounded-full bg-primary",
+                    targetZone === "before" ? "-top-px" : "-bottom-px",
+                  )}
+                  style={{ left: depth * 12 + 4 }}
                 />
+              ) : null}
+              <div
+                className={cn(
+                  "flex min-w-0 flex-1 items-center rounded-md transition-[background-color,box-shadow] duration-100",
+                  targetZone === "inside" && "bg-accent ring-1 ring-inset ring-primary/35",
+                )}
+              >
+                {hasChildren ? (
+                  <button
+                    type="button"
+                    className="absolute top-1/2 z-10 flex size-5 -translate-y-1/2 items-center justify-center text-muted-foreground"
+                    style={{ left: depth * 12 - 10 }}
+                    onClick={() => onToggle(node.id)}
+                    aria-label={isCollapsed ? "展开集合" : "折叠集合"}
+                    aria-expanded={!isCollapsed}
+                  >
+                    {isCollapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+                  </button>
+                ) : null}
+                <div className="min-w-0 flex-1">
+                  <SidebarRow
+                    active={activeId === node.id}
+                    onClick={() => useLibrary.getState().setView({ kind: "collection", id: node.id })}
+                    icon={<Folder />}
+                    label={node.name}
+                  />
+                </div>
               </div>
-            </div>
+            </motion.div>
           </ContextMenuTrigger>
           <ContextMenuContent className="min-w-44">
             <ContextMenuItem onSelect={() => onCreateChild(node.id)}>新建子集合</ContextMenuItem>
@@ -197,15 +241,20 @@ function CollectionRows({
             depth={depth + 1}
             activeId={activeId}
             collapsed={collapsed}
+            draggedId={draggedId}
+            dropTarget={dropTarget}
             onToggle={onToggle}
             onCreateChild={onCreateChild}
             onRename={onRename}
             onMove={onMove}
             onDelete={onDelete}
-            onDrop={onDrop}
+            onDragStart={onDragStart}
+            onDragMove={onDragMove}
+            onDragEnd={onDragEnd}
+            onClickCapture={onClickCapture}
           />
         ) : null}
-      </div>
+      </motion.div>
     );
   });
 }
@@ -323,20 +372,38 @@ export function Sidebar() {
   const [moveTarget, setMoveTarget] = useState<Collection | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Collection | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [draggedCollectionId, setDraggedCollectionId] = useState<string | null>(null);
+  const [collectionDropTarget, setCollectionDropTarget] = useState<CollectionDropTarget | null>(null);
   const headerRef = useRef<HTMLDivElement | null>(null);
+  const draggedCollectionIdRef = useRef<string | null>(null);
+  const collectionDropTargetRef = useRef<CollectionDropTarget | null>(null);
+  const dragExcludedRef = useRef<Set<string>>(new Set());
+  const suppressCollectionClickRef = useRef(false);
   useTitlebarDrag(headerRef);
 
   const themeCycle: ThemePreference[] = ["system", "light", "dark"];
   const ThemeIcon = preference === "light" ? Sun : preference === "dark" ? Moon : Laptop;
-  const collectionTree = buildCollectionTree(collections);
-  const flatCollections = flattenCollectionTree(collectionTree);
+  const collectionTree = useMemo(() => buildCollectionTree(collections), [collections]);
+  const flatCollections = useMemo(() => flattenCollectionTree(collectionTree), [collectionTree]);
+  const collectionsById = useMemo(() => new Map(collections.map((collection) => [collection.id, collection])), [collections]);
+  const collectionSiblings = useMemo(() => {
+    const result = new Map<string, CollectionTreeNode<Collection>[]>();
+    const visit = (nodes: CollectionTreeNode<Collection>[]) => {
+      for (const node of nodes) {
+        result.set(node.id, nodes);
+        visit(node.children);
+      }
+    };
+    visit(collectionTree);
+    return result;
+  }, [collectionTree]);
   const activeCollectionId = view.kind === "collection" ? view.id : null;
   const moveExcluded = moveTarget ? collectionSubtreeIds(collections, moveTarget.id) : new Set<string>();
 
   const dropCollection = async (
     draggedId: string,
     target: Collection,
-    zone: "before" | "inside" | "after",
+    zone: CollectionDropZone,
     siblings: Collection[],
   ) => {
     if (draggedId === target.id) return;
@@ -345,16 +412,79 @@ export function Sidebar() {
     if (zone === "inside") {
       parentId = target.id;
       beforeId = null;
+    } else if (zone === "after") {
+      const index = siblings.findIndex((item) => item.id === target.id);
+      beforeId = siblings[index + 1]?.id ?? null;
+    }
+    if (!(await moveCollection(draggedId, parentId, beforeId))) {
+      toast.error("无法移动集合");
+    } else if (zone === "inside") {
       setCollapsed((current) => {
         const next = new Set(current);
         next.delete(target.id);
         return next;
       });
-    } else if (zone === "after") {
-      const index = siblings.findIndex((item) => item.id === target.id);
-      beforeId = siblings[index + 1]?.id ?? null;
     }
-    if (!(await moveCollection(draggedId, parentId, beforeId))) toast.error("无法移动集合");
+  };
+
+  const updateCollectionDropTarget = (next: CollectionDropTarget | null) => {
+    collectionDropTargetRef.current = next;
+    setCollectionDropTarget((current) =>
+      current?.target.id === next?.target.id && current?.zone === next?.zone ? current : next,
+    );
+  };
+
+  const startCollectionDrag = (draggedId: string) => {
+    suppressCollectionClickRef.current = true;
+    draggedCollectionIdRef.current = draggedId;
+    dragExcludedRef.current = collectionSubtreeIds(collections, draggedId);
+    updateCollectionDropTarget(null);
+    setDraggedCollectionId(draggedId);
+  };
+
+  const moveCollectionDrag = (draggedId: string, point: { x: number; y: number }) => {
+    if (draggedCollectionIdRef.current !== draggedId) return;
+    let targetElement: HTMLElement | null = null;
+    for (const element of document.elementsFromPoint(point.x, point.y)) {
+      const candidate = element.closest<HTMLElement>("[data-collection-id]");
+      const candidateId = candidate?.dataset.collectionId;
+      if (candidateId && !dragExcludedRef.current.has(candidateId)) {
+        targetElement = candidate;
+        break;
+      }
+    }
+
+    const targetId = targetElement?.dataset.collectionId;
+    const target = targetId ? collectionsById.get(targetId) : undefined;
+    const siblings = targetId ? collectionSiblings.get(targetId) : undefined;
+    if (!targetElement || !target || !siblings) {
+      updateCollectionDropTarget(null);
+      return;
+    }
+
+    const rect = targetElement.getBoundingClientRect();
+    const ratio = (point.y - rect.top) / rect.height;
+    const zone: CollectionDropZone = ratio < 0.25 ? "before" : ratio > 0.75 ? "after" : "inside";
+    updateCollectionDropTarget({ target, zone, siblings });
+  };
+
+  const endCollectionDrag = (draggedId: string) => {
+    const dropTarget = collectionDropTargetRef.current;
+    draggedCollectionIdRef.current = null;
+    updateCollectionDropTarget(null);
+    setDraggedCollectionId(null);
+    requestAnimationFrame(() => {
+      suppressCollectionClickRef.current = false;
+    });
+    if (dropTarget) {
+      void dropCollection(draggedId, dropTarget.target, dropTarget.zone, dropTarget.siblings);
+    }
+  };
+
+  const suppressCollectionClick = (event: React.MouseEvent) => {
+    if (!suppressCollectionClickRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
   };
 
   return (
@@ -417,29 +547,38 @@ export function Sidebar() {
         {/* Collections */}
         <SectionLabel onAdd={() => setCreating({ kind: "collection", parentId: null })}>集合</SectionLabel>
         <div className="flex flex-col gap-px">
-          <CollectionRows
-            nodes={collectionTree}
-            activeId={activeCollectionId}
-            collapsed={collapsed}
-            onToggle={(id) => setCollapsed((current) => {
-              const next = new Set(current);
-              if (next.has(id)) next.delete(id);
-              else next.add(id);
-              return next;
-            })}
-            onCreateChild={(parentId) => {
-              setCreating({ kind: "collection", parentId });
-              setCollapsed((current) => {
-                const next = new Set(current);
-                next.delete(parentId);
-                return next;
-              });
-            }}
-            onRename={(collection) => setRenameTarget({ kind: "collection", id: collection.id, name: collection.name })}
-            onMove={setMoveTarget}
-            onDelete={setDeleteTarget}
-            onDrop={(draggedId, target, zone, siblings) => void dropCollection(draggedId, target, zone, siblings)}
-          />
+          <MotionConfig reducedMotion="user">
+            <LayoutGroup id="collection-tree">
+              <CollectionRows
+                nodes={collectionTree}
+                activeId={activeCollectionId}
+                collapsed={collapsed}
+                draggedId={draggedCollectionId}
+                dropTarget={collectionDropTarget}
+                onToggle={(id) => setCollapsed((current) => {
+                  const next = new Set(current);
+                  if (next.has(id)) next.delete(id);
+                  else next.add(id);
+                  return next;
+                })}
+                onCreateChild={(parentId) => {
+                  setCreating({ kind: "collection", parentId });
+                  setCollapsed((current) => {
+                    const next = new Set(current);
+                    next.delete(parentId);
+                    return next;
+                  });
+                }}
+                onRename={(collection) => setRenameTarget({ kind: "collection", id: collection.id, name: collection.name })}
+                onMove={setMoveTarget}
+                onDelete={setDeleteTarget}
+                onDragStart={startCollectionDrag}
+                onDragMove={moveCollectionDrag}
+                onDragEnd={endCollectionDrag}
+                onClickCapture={suppressCollectionClick}
+              />
+            </LayoutGroup>
+          </MotionConfig>
           {creating?.kind === "collection" && (
             <CreateInput
               placeholder={creating.parentId ? "子集合名称" : "集合名称"}
