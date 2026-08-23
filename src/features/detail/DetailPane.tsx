@@ -20,7 +20,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,6 +45,7 @@ import {
 import { tagBadgeClass, tagDotClass } from "@/lib/tag-colors";
 
 const MarkdownPreview = lazy(() => import("./MarkdownPreview"));
+const PdfPreview = lazy(() => import("@/components/PdfPreview"));
 
 function EmptyDetail() {
   return (
@@ -268,8 +268,10 @@ function FilePreview({ item }: { item: Item }) {
   }
   if (item.mime === "application/pdf") {
     return (
-      <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-border bg-muted/30">
-        <embed src={src} type="application/pdf" className="h-full w-full" />
+      <div className="min-h-0 flex-1 rounded-md border border-border bg-muted/30">
+        <Suspense fallback={<p className="py-12 text-center font-mono text-[11px] text-muted-foreground">正在载入 PDF…</p>}>
+          <PdfPreview src={src} itemId={item.id} title={item.title} />
+        </Suspense>
       </div>
     );
   }
@@ -481,8 +483,9 @@ export function DetailPane() {
           <EmptyDetail />
         )
       ) : (
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex min-h-full flex-col px-6 py-5">
+      <div className="flex min-h-0 flex-1 flex-col">
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="flex min-h-full flex-col px-6 py-5">
           {item.itemType === "note" ? (
             noteMode === "edit" && !isTrashed ? (
               <>
@@ -550,14 +553,18 @@ export function DetailPane() {
             </>
           )}
 
-          <Separator className="my-4" />
-
-          <div className="flex flex-col gap-4">
+          </div>
+        </ScrollArea>
+        <footer
+          className="max-h-[35%] shrink-0 overflow-y-auto border-t border-border px-6 py-3"
+          aria-label="条目信息"
+        >
+          <div className="flex flex-col gap-3">
             <TagsEditor item={item} />
             {item.itemType === "note" && !isTrashed && <Attachments item={item} />}
           </div>
-        </div>
-      </ScrollArea>
+        </footer>
+      </div>
       )}
     </section>
   );

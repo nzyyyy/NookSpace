@@ -102,7 +102,7 @@ function SidebarRow({
           : "text-foreground/80 hover:bg-accent/60 hover:text-foreground",
       )}
     >
-      {icon && <span className="text-muted-foreground [&_svg]:size-3.5">{icon}</span>}
+      {icon && <span className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-3.5">{icon}</span>}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {children}
     </div>
@@ -468,7 +468,7 @@ export function Sidebar() {
                   <SidebarRow
                     active={view.kind === "tag" && view.id === t.id}
                     onClick={() => setView({ kind: "tag", id: t.id })}
-                    icon={<span className={cn("size-2.5 rounded-full", tagDotClass(t.color))} />}
+                    icon={t.color ? <span className={cn("size-2.5 rounded-full", tagDotClass(t.color))} /> : undefined}
                     label={t.name}
                   />
                 </div>

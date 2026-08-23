@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { ExternalLink, Eye, File as FileIcon, Image as ImageIcon, X } from "lucide-react";
 import { convertFileSrc, ipc, type ItemDetail } from "@/core/ipc";
@@ -6,6 +6,8 @@ import { formatFullDate, formatSize } from "@/lib/format";
 import { isMediaFile } from "@/lib/file-types";
 import { useUi } from "@/stores/ui";
 import { Button } from "@/components/ui/button";
+
+const PdfPreview = lazy(() => import("@/components/PdfPreview"));
 
 export function QuickLook() {
   const { quickLookId, setQuickLookId } = useUi();
@@ -67,13 +69,17 @@ export function QuickLook() {
           </Button>
         </div>
 
-        <div className="flex min-h-0 flex-1 items-center justify-center bg-muted/40 p-4">
+        <div className="min-h-0 flex-1 overflow-y-auto bg-muted/40">
           {src && item.mime.startsWith("image/") ? (
-            <img src={src} alt={item.title} className="max-h-full max-w-full object-contain" draggable={false} />
+            <div className="flex min-h-full items-center justify-center p-4">
+              <img src={src} alt={item.title} className="max-h-full max-w-full object-contain" draggable={false} />
+            </div>
           ) : src && item.mime === "application/pdf" ? (
-            <embed src={src} type="application/pdf" className="h-full w-full rounded-md" />
+            <Suspense fallback={<p className="py-12 text-center font-mono text-[11px] text-muted-foreground">正在载入 PDF…</p>}>
+              <PdfPreview src={src} itemId={item.id} title={item.title} />
+            </Suspense>
           ) : (
-            <div className="flex flex-col items-center gap-2 p-8 text-center">
+            <div className="flex min-h-full flex-col items-center justify-center gap-2 p-8 text-center">
               {item.mime.startsWith("image/") ? (
                 <ImageIcon className="size-12 text-muted-foreground/40" />
               ) : (
