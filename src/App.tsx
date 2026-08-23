@@ -1,5 +1,12 @@
-import { useEffect, useRef } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { clampPaneWidth } from "@/lib/pane-width";
 import { useLibrary, type View } from "@/stores/library";
 import { initTheme } from "@/stores/theme";
 import { useShortcuts } from "@/hooks/useShortcuts";
@@ -18,12 +25,24 @@ interface NavEntry {
   id: string | null;
 }
 
+const LIST_MIN_WIDTH = 320;
+const DETAIL_MIN_WIDTH = 360;
+
 export default function App() {
   useShortcuts();
   const { init } = useLibrary();
 
   const backStack = useRef<NavEntry[]>([]);
   const fwdStack = useRef<NavEntry[]>([]);
+  const listPane = useRef<HTMLDivElement>(null);
+  const detailPane = useRef<HTMLDivElement>(null);
+  const resize = useRef<{
+    startX: number;
+    startWidth: number;
+    availableWidth: number;
+    minimumWidth: number;
+  } | undefined>(undefined);
+  const [listWidth, setListWidth] = useState<number>();
 
   // Theme + library bootstrap
   useEffect(() => {
@@ -100,12 +119,70 @@ export default function App() {
     };
   }, []);
 
+  const listMinimumWidth = () => {
+    const toolbar = listPane.current?.querySelector<HTMLElement>("[data-pane-toolbar]");
+    const spacer = toolbar?.querySelector<HTMLElement>("[data-pane-spacer]");
+    return Math.max(LIST_MIN_WIDTH, (toolbar?.scrollWidth ?? 0) - (spacer?.offsetWidth ?? 0));
+  };
+
+  const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !listPane.current || !detailPane.current) return;
+    const startWidth = listPane.current.getBoundingClientRect().width;
+    resize.current = {
+      startX: event.clientX,
+      startWidth,
+      availableWidth: startWidth + detailPane.current.getBoundingClientRect().width,
+      minimumWidth: listMinimumWidth(),
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+
+  const resizePanes = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resize.current) return;
+    setListWidth(clampPaneWidth(
+      resize.current.startWidth + event.clientX - resize.current.startX,
+      resize.current.availableWidth,
+      resize.current.minimumWidth,
+      DETAIL_MIN_WIDTH,
+    ));
+  };
+
+  const resizeWithKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const direction = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0;
+    if (!direction || !listPane.current || !detailPane.current) return;
+    const currentWidth = listPane.current.getBoundingClientRect().width;
+    setListWidth(clampPaneWidth(
+      currentWidth + direction * 24,
+      currentWidth + detailPane.current.getBoundingClientRect().width,
+      listMinimumWidth(),
+      DETAIL_MIN_WIDTH,
+    ));
+    event.preventDefault();
+  };
+
   return (
     <TooltipProvider delayDuration={300}>
       <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
         <Sidebar />
-        <ItemList />
-        <DetailPane />
+        <div ref={listPane} className="flex min-w-[320px] flex-1" style={listWidth === undefined ? undefined : { flex: `0 1 ${listWidth}px` }}>
+          <ItemList />
+        </div>
+        <div
+          role="separator"
+          aria-label="调整中间栏和右侧栏宽度"
+          aria-orientation="vertical"
+          tabIndex={0}
+          className="group relative z-10 -mx-1 w-2 shrink-0 touch-none cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-border after:content-[''] hover:after:bg-primary focus-visible:after:bg-primary active:after:bg-primary"
+          onPointerDown={startResize}
+          onPointerMove={resizePanes}
+          onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
+          onLostPointerCapture={() => { resize.current = undefined; }}
+          onKeyDown={resizeWithKeyboard}
+        />
+        <div ref={detailPane} className="flex min-w-[360px] flex-1">
+          <DetailPane />
+        </div>
       </div>
       <CommandPalette />
       <QuickLook />

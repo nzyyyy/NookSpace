@@ -341,9 +341,9 @@ export function ItemList() {
   useTitlebarDrag(toolbarRef);
 
   return (
-    <section className="flex min-w-0 flex-1 flex-col border-r border-border bg-background">
+    <section className="flex min-w-0 flex-1 flex-col bg-background">
       {/* Toolbar — also a window drag zone (buttons excluded) */}
-      <div ref={toolbarRef} className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
+      <div ref={toolbarRef} data-pane-toolbar className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
         {batch.length > 0 ? (
           <>
             <span className="font-mono text-[12px] text-muted-foreground">
@@ -446,16 +446,16 @@ export function ItemList() {
                 </Button>
               )}
             </div>
-            <div className="flex-1" />
+            <div data-pane-spacer className="flex-1" />
             <Button variant="ghost" size="sm" onClick={clearMulti}>
               取消
             </Button>
           </>
         ) : (
           <>
-            <h1 className="text-[15px] font-medium tracking-tight">{title}</h1>
+            <h1 className="shrink-0 whitespace-nowrap text-[15px] font-medium tracking-tight">{title}</h1>
             <span className="font-mono text-[11px] text-muted-foreground">{items.length}</span>
-            <div className="flex-1" />
+            <div data-pane-spacer className="flex-1" />
             <div className="flex rounded-md bg-muted p-0.5" aria-label="条目布局">
               <Button variant={listLayout === "list" ? "secondary" : "ghost"} size="icon-xs" onClick={() => setListLayout("list")} aria-label="列表视图">
                 <List className="size-3.5" />
