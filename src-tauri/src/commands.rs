@@ -400,6 +400,31 @@ pub async fn generate_thumbnail(
 }
 
 #[tauri::command]
+pub async fn read_text_file(
+    state: State<'_, Library>,
+    id: String,
+) -> Result<TextFileDocument, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| l.read_text_file(&id)).await
+}
+
+#[tauri::command]
+pub async fn write_text_file(
+    state: State<'_, Library>,
+    id: String,
+    content: String,
+    expected_version: String,
+    encoding: String,
+    line_ending: String,
+) -> Result<TextFileWriteResult, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| {
+        l.write_text_file(&id, &content, &expected_version, &encoding, &line_ending)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn file_abs_path(
     state: State<'_, Library>,
     id: String,

@@ -30,9 +30,9 @@ export function SettingsDialog() {
   const retryPdfIndex = useLibrary((s) => s.retryPdfIndex);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const flushNotes = async () => {
+  const flushEdits = async () => {
     const waits: Promise<void>[] = [];
-    window.dispatchEvent(new CustomEvent("nookspace:flush-notes", { detail: waits }));
+    window.dispatchEvent(new CustomEvent("nookspace:flush-edits", { detail: waits }));
     await Promise.all(waits);
   };
 
@@ -43,7 +43,7 @@ export function SettingsDialog() {
     if (!path) return;
     setBusy(label);
     try {
-      await flushNotes();
+      await flushEdits();
       const result = await action(path);
       toast.success(`${label}完成：${result}`);
       if (restart) await ipc.restartApp();

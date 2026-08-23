@@ -111,7 +111,7 @@ fn mime_of(name: &str) -> String {
         "svg" => "image/svg+xml",
         "pdf" => "application/pdf",
         "md" | "markdown" => "text/markdown",
-        "txt" => "text/plain",
+        "txt" | "log" => "text/plain",
         "html" | "htm" => "text/html",
         "json" => "application/json",
         "csv" => "text/csv",
@@ -147,6 +147,16 @@ fn mime_of(name: &str) -> String {
         _ => "application/octet-stream",
     };
     mime.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mime_of;
+
+    #[test]
+    fn log_files_are_plain_text() {
+        assert_eq!(mime_of("app.LOG"), "text/plain");
+    }
 }
 
 fn import_one(

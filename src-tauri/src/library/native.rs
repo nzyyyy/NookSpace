@@ -1,6 +1,16 @@
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::process::Command;
 
+use rusqlite::params;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use crate::library::models::{TextFileDocument, TextFileWriteResult};
 use crate::library::Library;
+
+pub(super) const MAX_TEXT_FILE_BYTES: u64 = 5 * 1024 * 1024;
+const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
 pub(super) fn is_media(mime: &str, name: &str) -> bool {
     const MEDIA_EXTENSIONS: &[&str] = &[
@@ -11,6 +21,205 @@ pub(super) fn is_media(mime: &str, name: &str) -> bool {
     mime.starts_with("audio/")
         || mime.starts_with("video/")
         || MEDIA_EXTENSIONS.contains(&extension.as_str())
+}
+
+pub(super) fn is_text_file(mime: &str, name: &str) -> bool {
+    const TEXT_EXTENSIONS: &[&str] = &["txt", "md", "markdown", "log", "csv", "json"];
+    let extension = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    mime.starts_with("text/")
+        || mime == "application/json"
+        || TEXT_EXTENSIONS.contains(&extension.as_str())
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn normalize_line_endings(content: &str) -> String {
+    content.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn first_line_ending(content: &str) -> &'static str {
+    let bytes = content.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' {
+            return if index > 0 && bytes[index - 1] == b'\r' {
+                "crlf"
+            } else {
+                "lf"
+            };
+        }
+        if *byte == b'\r' && bytes.get(index + 1) != Some(&b'\n') {
+            return "cr";
+        }
+    }
+    "lf"
+}
+
+fn decode_text(bytes: &[u8]) -> Result<TextFileDocument, String> {
+    let (encoding, body) = if bytes.starts_with(UTF8_BOM) {
+        ("utf8Bom", &bytes[UTF8_BOM.len()..])
+    } else {
+        ("utf8", bytes)
+    };
+    let content = std::str::from_utf8(body).map_err(|_| "文件不是有效的 UTF-8 文本".to_string())?;
+    Ok(TextFileDocument {
+        content: normalize_line_endings(content),
+        version: sha256_bytes(bytes),
+        encoding: encoding.into(),
+        line_ending: first_line_ending(content).into(),
+    })
+}
+
+fn encode_text(content: &str, encoding: &str, line_ending: &str) -> Result<Vec<u8>, String> {
+    let newline = match line_ending {
+        "lf" => "\n",
+        "crlf" => "\r\n",
+        "cr" => "\r",
+        _ => return Err("无效的换行格式".into()),
+    };
+    if !matches!(encoding, "utf8" | "utf8Bom") {
+        return Err("无效的文本编码".into());
+    }
+    let normalized = normalize_line_endings(content);
+    let mut bytes = Vec::with_capacity(normalized.len() + UTF8_BOM.len());
+    if encoding == "utf8Bom" {
+        bytes.extend_from_slice(UTF8_BOM);
+    }
+    if newline == "\n" {
+        bytes.extend_from_slice(normalized.as_bytes());
+    } else {
+        bytes.extend_from_slice(normalized.replace('\n', newline).as_bytes());
+    }
+    if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
+        return Err("文本超过 5 MiB，无法在应用内保存".into());
+    }
+    Ok(bytes)
+}
+
+pub fn read_text_file(lib: &Library, id: &str) -> Result<TextFileDocument, String> {
+    let item = lib.get_item(id)?.item;
+    if item.item_type != "file"
+        || item.stored_path.is_empty()
+        || !is_text_file(&item.mime, &item.stored_path)
+    {
+        return Err("此类型暂不支持内置文本阅读".into());
+    }
+    let path = lib.safe_stored_path(&item.stored_path)?;
+    if fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len()
+        > MAX_TEXT_FILE_BYTES
+    {
+        return Err("文本超过 5 MiB，请使用默认应用打开".into());
+    }
+    decode_text(&fs::read(path).map_err(|error| error.to_string())?)
+}
+
+pub fn write_text_file(
+    lib: &Library,
+    id: &str,
+    content: &str,
+    expected_version: &str,
+    encoding: &str,
+    line_ending: &str,
+) -> Result<TextFileWriteResult, String> {
+    let item = lib.get_item(id)?.item;
+    if item.item_type != "file"
+        || item.stored_path.is_empty()
+        || !is_text_file(&item.mime, &item.stored_path)
+    {
+        return Err("此类型不支持内置文本编辑".into());
+    }
+    if item.deleted_at.is_some() {
+        return Err("回收站中的文件不可编辑".into());
+    }
+
+    let path = lib.safe_stored_path(&item.stored_path)?;
+    if fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len()
+        > MAX_TEXT_FILE_BYTES
+    {
+        return Err("文本超过 5 MiB，无法在应用内保存".into());
+    }
+    let original = fs::read(&path).map_err(|error| error.to_string())?;
+    let current_version = sha256_bytes(&original);
+    if current_version != expected_version {
+        return Ok(TextFileWriteResult::Conflict {
+            version: current_version,
+        });
+    }
+
+    let replacement = encode_text(content, encoding, line_ending)?;
+    let version = sha256_bytes(&replacement);
+    if replacement == original {
+        return Ok(TextFileWriteResult::Saved { item, version });
+    }
+
+    let parent = path.parent().ok_or("无效的库内文件目录")?;
+    let token = Uuid::new_v4();
+    let temporary = parent.join(format!(".nookspace-{token}.tmp"));
+    let backup = parent.join(format!(".nookspace-{token}.bak"));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| error.to_string())?;
+        file.write_all(&replacement)
+            .and_then(|_| file.sync_all())
+            .map_err(|error| error.to_string())?;
+        fs::set_permissions(
+            &temporary,
+            fs::metadata(&path)
+                .map_err(|error| error.to_string())?
+                .permissions(),
+        )
+        .map_err(|error| error.to_string())?;
+        fs::copy(&path, &backup).map_err(|error| error.to_string())?;
+        if let Err(error) = fs::rename(&temporary, &path) {
+            let _ = fs::remove_file(&backup);
+            return Err(error.to_string());
+        }
+
+        let database_result = (|| {
+            let mut conn = lib.db.lock().unwrap();
+            let tx = conn.transaction().map_err(|error| error.to_string())?;
+            let updated = tx
+                .execute(
+                    "UPDATE items SET size = ?1, updated_at = datetime('now'), \
+                     meta = json_set(meta, '$.sha256', ?2) \
+                     WHERE id = ?3 AND type = 'file' AND deleted_at IS NULL",
+                    params![replacement.len() as i64, version, id],
+                )
+                .map_err(|error| error.to_string())?;
+            if updated != 1 {
+                return Err("文件条目不可编辑".into());
+            }
+            tx.commit().map_err(|error| error.to_string())
+        })();
+
+        if let Err(error) = database_result {
+            return match fs::rename(&backup, &path) {
+                Ok(()) => Err(error),
+                Err(restore_error) => Err(format!(
+                    "保存元数据失败：{error}；恢复原文件失败：{restore_error}"
+                )),
+            };
+        }
+        let _ = fs::remove_file(&backup);
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
+
+    Ok(TextFileWriteResult::Saved {
+        item: lib.get_item(id)?.item,
+        version,
+    })
 }
 
 /// Open a File item with the system default app (macOS `open` semantics via
@@ -95,7 +304,7 @@ pub fn generate_thumbnail(lib: &Library, id: &str) -> Result<Option<String>, Str
 
 #[cfg(test)]
 mod tests {
-    use super::is_media;
+    use super::{decode_text, encode_text, is_media, is_text_file, MAX_TEXT_FILE_BYTES, UTF8_BOM};
 
     #[test]
     fn media_files_are_not_previewed() {
@@ -105,5 +314,24 @@ mod tests {
         assert!(is_media("application/octet-stream", "movie.webm"));
         assert!(!is_media("application/pdf", "document.pdf"));
         assert!(!is_media("image/png", "image.png"));
+    }
+
+    #[test]
+    fn text_files_preserve_utf8_bom_and_first_line_ending() {
+        assert!(is_text_file("application/octet-stream", "events.LOG"));
+        assert!(is_text_file("application/json", "data.bin"));
+        assert!(!is_text_file("application/pdf", "document.pdf"));
+
+        let bytes = [UTF8_BOM, b"one\r\ntwo\n"].concat();
+        let document = decode_text(&bytes).unwrap();
+        assert_eq!(document.content, "one\ntwo\n");
+        assert_eq!(document.encoding, "utf8Bom");
+        assert_eq!(document.line_ending, "crlf");
+        assert_eq!(
+            encode_text(&document.content, &document.encoding, &document.line_ending).unwrap(),
+            [UTF8_BOM, b"one\r\ntwo\r\n"].concat()
+        );
+        assert!(decode_text(&[0xff]).is_err());
+        assert!(encode_text(&"a".repeat(MAX_TEXT_FILE_BYTES as usize + 1), "utf8", "lf").is_err());
     }
 }

@@ -184,6 +184,22 @@ pub struct ImportResult {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TextFileDocument {
+    pub content: String,
+    pub version: String,
+    pub encoding: String,
+    pub line_ending: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum TextFileWriteResult {
+    Saved { item: Item, version: String },
+    Conflict { version: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryInfo {
     pub root: String,
     pub db_path: String,

@@ -72,6 +72,8 @@ pub fn run() {
             commands::open_with_default,
             commands::quicklook,
             commands::generate_thumbnail,
+            commands::read_text_file,
+            commands::write_text_file,
             commands::file_abs_path,
         ])
         .run(tauri::generate_context!())

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ExternalLink,
   File as FileIcon,
@@ -11,7 +12,13 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { convertFileSrc, ipc, type Item } from "@/core/ipc";
+import {
+  convertFileSrc,
+  ipc,
+  type Item,
+  type TextFileEncoding,
+  type TextFileLineEnding,
+} from "@/core/ipc";
 import { formatFullDate, formatSize, TYPE_LABEL } from "@/lib/format";
 import { isMediaFile } from "@/lib/file-types";
 import { useLibrary } from "@/stores/library";
@@ -43,6 +50,14 @@ import {
   type NoteDraft,
 } from "@/lib/note-draft";
 import { tagBadgeClass, tagDotClass } from "@/lib/tag-colors";
+import {
+  classifyTextFileDraft,
+  createSerialTextFileDraftWriter,
+  deleteTextFileDraft,
+  deleteTextFileDraftIfContentMatches,
+  readTextFileDraft,
+  type TextFileDraft,
+} from "@/lib/text-file-draft";
 
 const MarkdownPreview = lazy(() => import("./MarkdownPreview"));
 const PdfPreview = lazy(() => import("@/components/PdfPreview"));
@@ -231,10 +246,335 @@ function Attachments({ item }: { item: Item }) {
   );
 }
 
-function FilePreview({ item }: { item: Item }) {
-  const [absPath, setAbsPath] = useState<string | null>(null);
+type TextFileSaveState = "idle" | "dirty" | "saving" | "saved" | "error" | "conflict";
+
+function TextFileEditor({
+  item,
+  headerActions,
+}: {
+  item: Item;
+  headerActions: HTMLDivElement | null;
+}) {
+  const [content, setContent] = useState("");
+  const [mode, setMode] = useState<"read" | "edit">("read");
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<TextFileSaveState>("idle");
+  const version = useRef("");
+  const encoding = useRef<TextFileEncoding>("utf8");
+  const lineEnding = useRef<TextFileLineEnding>("lf");
+  const latestDraft = useRef<TextFileDraft | null>(null);
+  const conflictVersion = useRef<string | null>(null);
+  const saveError = useRef("");
+  const mounted = useRef(true);
+  const draftWarningShown = useRef(false);
+  const draftWriter = useRef<ReturnType<typeof createSerialTextFileDraftWriter> | null>(null);
+  const saver = useRef<ReturnType<typeof createSerialNoteSaver> | null>(null);
+  const isMarkdown = item.mime === "text/markdown" || /\.(md|markdown)$/i.test(item.title);
+
+  const warnDraftFailure = () => {
+    if (draftWarningShown.current) return;
+    draftWarningShown.current = true;
+    toast.error("无法保存文件恢复草稿，自动保存仍会继续");
+  };
+
+  if (!draftWriter.current) {
+    draftWriter.current = createSerialTextFileDraftWriter(undefined, warnDraftFailure);
+  }
+
+  if (!saver.current) {
+    saver.current = createSerialNoteSaver({
+      save: async (draft) => {
+        if (mounted.current) setSaveState("saving");
+        saveError.current = "";
+        try {
+          const result = await ipc.writeTextFile(
+            item.id,
+            draft.content,
+            version.current,
+            encoding.current,
+            lineEnding.current,
+          );
+          if (result.status === "conflict") {
+            conflictVersion.current = result.version;
+            return null;
+          }
+          version.current = result.version;
+          const library = useLibrary.getState();
+          if (library.detail?.item.id === item.id) {
+            library.applyDetail({ ...library.detail, item: result.item });
+          }
+          return result.version;
+        } catch (error) {
+          saveError.current = String(error);
+          return null;
+        }
+      },
+      onSaved: (saved, updatedVersion) => {
+        conflictVersion.current = null;
+        const current = latestDraft.current;
+        if (current?.content === saved.content) {
+          latestDraft.current = null;
+          void draftWriter.current
+            ?.flush()
+            .then(() => deleteTextFileDraftIfContentMatches(item.id, saved.content))
+            .catch(warnDraftFailure);
+        } else if (current) {
+          const rebased = { ...current, baseVersion: updatedVersion };
+          latestDraft.current = rebased;
+          draftWriter.current?.schedule(rebased);
+        }
+        if (mounted.current) setSaveState(latestDraft.current ? "dirty" : "saved");
+      },
+      onFailed: () => {
+        if (!mounted.current) return;
+        setSaveState(conflictVersion.current ? "conflict" : "error");
+      },
+    });
+  }
+
+  const scheduleSave = (draft: TextFileDraft) => {
+    saver.current?.schedule({
+      id: draft.itemId,
+      title: item.title,
+      content: draft.content,
+      baseUpdatedAt: draft.baseVersion,
+    });
+  };
 
   useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setLoadError(null);
+    void (async () => {
+      try {
+        const document = await ipc.readTextFile(item.id);
+        const storedDraft = await readTextFileDraft(item.id).catch(() => {
+          warnDraftFailure();
+          return null;
+        });
+        if (!alive) return;
+        version.current = document.version;
+        encoding.current = document.encoding;
+        lineEnding.current = document.lineEnding;
+        const decision = classifyTextFileDraft(document, storedDraft);
+        if (decision === "recover" && storedDraft) {
+          latestDraft.current = storedDraft;
+          encoding.current = storedDraft.encoding;
+          lineEnding.current = storedDraft.lineEnding;
+          setContent(storedDraft.content);
+          setMode(item.deletedAt ? "read" : "edit");
+          setSaveState("dirty");
+          toast.info("已恢复未保存的文件内容");
+          if (!item.deletedAt) scheduleSave(storedDraft);
+        } else if (decision === "conflict" && storedDraft) {
+          latestDraft.current = storedDraft;
+          conflictVersion.current = document.version;
+          encoding.current = storedDraft.encoding;
+          lineEnding.current = storedDraft.lineEnding;
+          setContent(storedDraft.content);
+          setMode(item.deletedAt ? "read" : "edit");
+          setSaveState("conflict");
+        } else {
+          latestDraft.current = null;
+          conflictVersion.current = null;
+          setContent(document.content);
+          setMode("read");
+          setSaveState("idle");
+          if (decision === "discard") void deleteTextFileDraft(item.id).catch(warnDraftFailure);
+        }
+      } catch (error) {
+        if (alive) setLoadError(String(error));
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [item.id]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      void saver.current?.flush();
+      void draftWriter.current?.flush();
+    };
+  }, []);
+
+  useEffect(() => {
+    const flush = (event: Event) => {
+      const saving = saver.current?.flush() ?? Promise.resolve();
+      const drafting = draftWriter.current?.flush() ?? Promise.resolve();
+      (event as CustomEvent<Promise<void>[]>).detail.push(
+        Promise.all([saving, drafting]).then(() => undefined),
+      );
+    };
+    window.addEventListener("nookspace:flush-edits", flush);
+    return () => window.removeEventListener("nookspace:flush-edits", flush);
+  }, []);
+
+  const updateContent = (nextContent: string) => {
+    const draft: TextFileDraft = {
+      itemId: item.id,
+      content: nextContent,
+      baseVersion: version.current,
+      encoding: encoding.current,
+      lineEnding: lineEnding.current,
+    };
+    setContent(nextContent);
+    latestDraft.current = draft;
+    draftWriter.current?.schedule(draft);
+    setSaveState(conflictVersion.current ? "conflict" : "dirty");
+    if (!conflictVersion.current) scheduleSave(draft);
+  };
+
+  const changeMode = (nextMode: "read" | "edit") => {
+    setMode(nextMode);
+    if (nextMode === "read") void saver.current?.flush();
+  };
+
+  const retrySave = () => {
+    if (!latestDraft.current || conflictVersion.current) return;
+    scheduleSave(latestDraft.current);
+    void saver.current?.flush();
+  };
+
+  const reload = async () => {
+    setLoading(true);
+    try {
+      const document = await ipc.readTextFile(item.id);
+      version.current = document.version;
+      encoding.current = document.encoding;
+      lineEnding.current = document.lineEnding;
+      latestDraft.current = null;
+      conflictVersion.current = null;
+      setContent(document.content);
+      setMode("read");
+      setSaveState("idle");
+      await deleteTextFileDraft(item.id);
+    } catch (error) {
+      toast.error(`重新载入失败：${String(error)}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const overwrite = () => {
+    const draft = latestDraft.current;
+    const currentVersion = conflictVersion.current;
+    if (!draft || !currentVersion || item.deletedAt) return;
+    version.current = currentVersion;
+    conflictVersion.current = null;
+    const rebased = { ...draft, baseVersion: currentVersion };
+    latestDraft.current = rebased;
+    draftWriter.current?.schedule(rebased);
+    setSaveState("dirty");
+    scheduleSave(rebased);
+    void saver.current?.flush();
+  };
+
+  if (loading) {
+    return <p className="py-12 text-center font-mono text-[11px] text-muted-foreground">正在载入文本…</p>;
+  }
+  if (loadError) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 py-12 text-center">
+        <FileIcon className="size-12 text-muted-foreground/40" />
+        <p className="max-w-md text-[12px] text-muted-foreground">{loadError}</p>
+        <Button variant="outline" size="sm" onClick={() => void ipc.openWithDefault(item.id)}>
+          <ExternalLink className="size-3.5" /> 用默认应用打开
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {headerActions && createPortal(
+        <>
+          <div className="flex items-center rounded-md bg-muted p-0.5" aria-label="文本文件模式">
+            <Button variant={mode === "read" ? "default" : "ghost"} size="xs" aria-pressed={mode === "read"} onClick={() => changeMode("read")}>
+              阅读
+            </Button>
+            <Button variant={mode === "edit" ? "default" : "ghost"} size="xs" aria-pressed={mode === "edit"} onClick={() => changeMode("edit")} disabled={Boolean(item.deletedAt)}>
+              编辑
+            </Button>
+          </div>
+          {saveState !== "idle" && saveState !== "conflict" && (
+            <button
+              type="button"
+              disabled={saveState !== "error"}
+              title={saveError.current || undefined}
+              onClick={retrySave}
+              className={cn(
+                "font-mono text-[10.5px]",
+                saveState === "error" ? "text-destructive" : "text-muted-foreground/60",
+              )}
+            >
+              {saveState === "saving"
+                ? "保存中…"
+                : saveState === "saved"
+                  ? "已保存"
+                  : saveState === "error"
+                    ? "保存失败，点击重试"
+                    : "未保存"}
+            </button>
+          )}
+        </>,
+        headerActions,
+      )}
+
+      <div className="flex min-h-[360px] flex-1 flex-col gap-3">
+        {saveState === "conflict" && (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2" role="alert">
+            <p className="min-w-0 flex-1 text-[12px] text-foreground/80">
+              文件已被其他应用修改，自动保存已暂停；当前草稿仍被保留。
+            </p>
+            <Button variant="outline" size="xs" onClick={() => void reload()}>重新载入</Button>
+            <Button variant="destructive" size="xs" onClick={overwrite} disabled={Boolean(item.deletedAt)}>覆盖保存</Button>
+          </div>
+        )}
+
+        {mode === "edit" && !item.deletedAt ? (
+          <Textarea
+            autoFocus
+            value={content}
+            onChange={(event) => updateContent(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") changeMode("read");
+            }}
+            className="min-h-[360px] flex-1 resize-none rounded-md border-border/60 p-3 font-mono text-[13px] leading-6 shadow-none focus-visible:ring-1 focus-visible:ring-ring/30"
+            aria-label={`编辑 ${item.title}`}
+          />
+        ) : isMarkdown ? (
+          <Suspense fallback={<p className="text-[13px] text-muted-foreground">正在排版…</p>}>
+            <MarkdownPreview content={content} />
+          </Suspense>
+        ) : (
+          <pre className="whitespace-pre-wrap break-words font-mono text-[13px] leading-6 text-foreground/90">{content}</pre>
+        )}
+      </div>
+    </>
+  );
+}
+
+function FilePreview({
+  item,
+  headerActions,
+}: {
+  item: Item;
+  headerActions: HTMLDivElement | null;
+}) {
+  const [absPath, setAbsPath] = useState<string | null>(null);
+  const usesAssetPreview = item.mime.startsWith("image/") || item.mime === "application/pdf";
+
+  useEffect(() => {
+    if (!usesAssetPreview) {
+      setAbsPath(null);
+      return;
+    }
     let alive = true;
     setAbsPath(null);
     void ipc.fileAbsPath(item.id).then((p) => {
@@ -243,7 +583,11 @@ function FilePreview({ item }: { item: Item }) {
     return () => {
       alive = false;
     };
-  }, [item.id]);
+  }, [item.id, usesAssetPreview]);
+
+  if (!usesAssetPreview) {
+    return <TextFileEditor key={item.id} item={item} headerActions={headerActions} />;
+  }
 
   const src = absPath ? convertFileSrc(absPath) : null;
 
@@ -292,6 +636,7 @@ export function DetailPane() {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [saveState, setSaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
+  const [fileHeaderActions, setFileHeaderActions] = useState<HTMLDivElement | null>(null);
   const loadedId = useRef<string | null>(null);
   const baseUpdatedAt = useRef("");
   const latestDraft = useRef<NoteDraft | null>(null);
@@ -345,8 +690,8 @@ export function DetailPane() {
     const flush = (event: Event) => {
       (event as CustomEvent<Promise<void>[]>).detail.push(saver.current?.flush() ?? Promise.resolve());
     };
-    window.addEventListener("nookspace:flush-notes", flush);
-    return () => window.removeEventListener("nookspace:flush-notes", flush);
+    window.addEventListener("nookspace:flush-edits", flush);
+    return () => window.removeEventListener("nookspace:flush-edits", flush);
   }, []);
   useEffect(() => {
     if (noteMode === "read") void saver.current?.flush();
@@ -389,6 +734,9 @@ export function DetailPane() {
           {item ? TYPE_LABEL[item.itemType] : "详情"}
         </h1>
         <div className="flex-1" />
+        {item?.itemType === "file" && (
+          <div ref={setFileHeaderActions} className="flex items-center gap-2" />
+        )}
         {item?.itemType === "note" && (
           <div className="flex items-center rounded-md bg-muted p-0.5" aria-label="笔记模式">
             <Button variant={noteMode === "read" ? "default" : "ghost"} size="xs" aria-pressed={noteMode === "read"} onClick={() => changeNoteMode("read")}>
@@ -530,7 +878,7 @@ export function DetailPane() {
                 <span>修改于 {formatFullDate(item.updatedAt)}</span>
               </div>
               <div className="mt-4 flex min-h-0 flex-1 flex-col">
-                <FilePreview item={item} />
+                <FilePreview item={item} headerActions={fileHeaderActions} />
               </div>
             </>
           ) : (

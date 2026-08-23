@@ -678,6 +678,167 @@ mod tests {
     }
 
     #[test]
+    fn text_file_edits_preserve_format_detect_conflicts_and_ignore_source() {
+        let (temp, lib) = disk_library();
+        let source = temp.0.join("source.txt");
+        let original = [b"\xef\xbb\xbf".as_slice(), b"one\r\ntwo\r\n"].concat();
+        fs::write(&source, &original).unwrap();
+        let imported = lib
+            .import_files(&[source.to_string_lossy().to_string()], None)
+            .unwrap()
+            .imported
+            .remove(0)
+            .item;
+
+        let document = lib.read_text_file(&imported.id).unwrap();
+        assert_eq!(document.content, "one\ntwo\n");
+        assert_eq!(document.encoding, "utf8Bom");
+        assert_eq!(document.line_ending, "crlf");
+
+        let saved = lib
+            .write_text_file(
+                &imported.id,
+                "changed\ntext\n",
+                &document.version,
+                &document.encoding,
+                &document.line_ending,
+            )
+            .unwrap();
+        let (saved_item, saved_version) = match saved {
+            TextFileWriteResult::Saved { item, version } => (item, version),
+            TextFileWriteResult::Conflict { .. } => panic!("unexpected conflict"),
+        };
+        let stored = lib.safe_stored_path(&saved_item.stored_path).unwrap();
+        assert_eq!(
+            fs::read(&stored).unwrap(),
+            [b"\xef\xbb\xbf".as_slice(), b"changed\r\ntext\r\n"].concat()
+        );
+        assert_eq!(fs::read(&source).unwrap(), original);
+        assert_eq!(saved_item.size, 18);
+        let stored_sha: String = lib
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT json_extract(meta, '$.sha256') FROM items WHERE id = ?1",
+                params![imported.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_sha, saved_version);
+
+        let conflict = lib
+            .write_text_file(
+                &saved_item.id,
+                "must not win",
+                &document.version,
+                &document.encoding,
+                &document.line_ending,
+            )
+            .unwrap();
+        assert!(matches!(conflict, TextFileWriteResult::Conflict { .. }));
+        assert_eq!(
+            lib.read_text_file(&saved_item.id).unwrap().content,
+            "changed\ntext\n"
+        );
+
+        fs::remove_file(source).unwrap();
+        assert_eq!(
+            lib.read_text_file(&saved_item.id).unwrap().content,
+            "changed\ntext\n"
+        );
+        lib.delete_items(std::slice::from_ref(&saved_item.id))
+            .unwrap();
+        assert!(lib
+            .write_text_file(
+                &saved_item.id,
+                "trash",
+                &saved_version,
+                &document.encoding,
+                &document.line_ending,
+            )
+            .is_err());
+        assert_eq!(
+            lib.read_text_file(&saved_item.id).unwrap().content,
+            "changed\ntext\n"
+        );
+    }
+
+    #[test]
+    fn text_file_reader_rejects_invalid_encoding_and_large_files() {
+        let (_temp, lib) = disk_library();
+        let invalid = lib.root.join("files/invalid/data.json");
+        fs::create_dir_all(invalid.parent().unwrap()).unwrap();
+        fs::write(&invalid, [0xff]).unwrap();
+        let invalid_id = lib
+            .insert_item(
+                "file",
+                "data.json",
+                "",
+                "",
+                "files/invalid/data.json",
+                1,
+                "application/json",
+                "{}",
+                &[],
+            )
+            .unwrap();
+        assert!(lib.read_text_file(&invalid_id).is_err());
+
+        let large = lib.root.join("files/large/output.log");
+        fs::create_dir_all(large.parent().unwrap()).unwrap();
+        fs::write(&large, vec![b'a'; native::MAX_TEXT_FILE_BYTES as usize + 1]).unwrap();
+        let large_id = lib
+            .insert_item(
+                "file",
+                "output.log",
+                "",
+                "",
+                "files/large/output.log",
+                native::MAX_TEXT_FILE_BYTES as i64 + 1,
+                "application/octet-stream",
+                "{}",
+                &[],
+            )
+            .unwrap();
+        assert!(lib.read_text_file(&large_id).is_err());
+    }
+
+    #[test]
+    fn text_file_save_restores_original_when_metadata_update_fails() {
+        let (_temp, lib) = disk_library();
+        let stored = lib.root.join("files/rollback/data.txt");
+        fs::create_dir_all(stored.parent().unwrap()).unwrap();
+        fs::write(&stored, b"original").unwrap();
+        let id = lib
+            .insert_item(
+                "file",
+                "data.txt",
+                "",
+                "",
+                "files/rollback/data.txt",
+                8,
+                "text/plain",
+                "{bad",
+                &[],
+            )
+            .unwrap();
+        let document = lib.read_text_file(&id).unwrap();
+
+        assert!(lib
+            .write_text_file(
+                &id,
+                "replacement",
+                &document.version,
+                &document.encoding,
+                &document.line_ending,
+            )
+            .is_err());
+        assert_eq!(fs::read(&stored).unwrap(), b"original");
+        assert_eq!(fs::read_dir(stored.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
     #[ignore = "release-mode acceptance benchmark"]
     fn benchmark_100k_fts_hot_query_p95_under_100ms() {
         let lib = library();
@@ -1793,6 +1954,23 @@ impl Library {
 
     pub fn generate_thumbnail(&self, id: &str) -> Result<Option<String>, String> {
         native::generate_thumbnail(self, id)
+    }
+
+    pub fn read_text_file(&self, id: &str) -> Result<TextFileDocument, String> {
+        let _files = self.files_lock.lock().unwrap();
+        native::read_text_file(self, id)
+    }
+
+    pub fn write_text_file(
+        &self,
+        id: &str,
+        content: &str,
+        expected_version: &str,
+        encoding: &str,
+        line_ending: &str,
+    ) -> Result<TextFileWriteResult, String> {
+        let _files = self.files_lock.lock().unwrap();
+        native::write_text_file(self, id, content, expected_version, encoding, line_ending)
     }
 
     /// Absolute path of a File item's stored file (for in-window preview).

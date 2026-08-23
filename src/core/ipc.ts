@@ -129,6 +129,20 @@ export interface IndexResult {
   failed: number;
 }
 
+export type TextFileEncoding = "utf8" | "utf8Bom";
+export type TextFileLineEnding = "lf" | "crlf" | "cr";
+
+export interface TextFileDocument {
+  content: string;
+  version: string;
+  encoding: TextFileEncoding;
+  lineEnding: TextFileLineEnding;
+}
+
+export type TextFileWriteResult =
+  | { status: "saved"; item: Item; version: string }
+  | { status: "conflict"; version: string };
+
 // ---- typed invoke wrappers (the single seam to Rust) ----
 
 export const ipc = {
@@ -248,6 +262,23 @@ export const ipc = {
 
   generateThumbnail: (id: string) =>
     invoke<string | null>("generate_thumbnail", { id }),
+
+  readTextFile: (id: string) =>
+    invoke<TextFileDocument>("read_text_file", { id }),
+
+  writeTextFile: (
+    id: string,
+    content: string,
+    expectedVersion: string,
+    encoding: TextFileEncoding,
+    lineEnding: TextFileLineEnding,
+  ) => invoke<TextFileWriteResult>("write_text_file", {
+    id,
+    content,
+    expectedVersion,
+    encoding,
+    lineEnding,
+  }),
 
   fileAbsPath: (id: string) =>
     invoke<string | null>("file_abs_path", { id }),
