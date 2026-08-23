@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
@@ -12,9 +12,13 @@ pub mod db;
 pub mod import;
 pub mod models;
 pub mod native;
+mod saved;
+mod search;
+mod transfer;
 
 const FILES_DIR: &str = "files";
 const THUMB_DIR: &str = "thumb";
+const LOCATION_FILE: &str = "library-location";
 const TAG_COLORS: &[&str] = &["red", "orange", "amber", "green", "blue", "purple", "pink"];
 
 /// The deep module: everything the app knows about its Library lives behind
@@ -24,11 +28,22 @@ pub struct Library {
     db: Arc<Mutex<Connection>>,
     root: PathBuf,
     cache: PathBuf,
+    app_data: PathBuf,
+    files_lock: Arc<Mutex<()>>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    struct TestRoot(PathBuf);
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn library() -> Library {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -38,7 +53,66 @@ mod tests {
             db: Arc::new(Mutex::new(conn)),
             root: PathBuf::new(),
             cache: PathBuf::new(),
+            app_data: PathBuf::new(),
+            files_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    fn disk_library() -> (TestRoot, Library) {
+        let base = std::env::temp_dir().join(format!("nookspace-test-{}", uuid()));
+        let root = base.join("library");
+        let cache = base.join("cache");
+        let app_data = base.join("bootstrap");
+        fs::create_dir_all(root.join(FILES_DIR)).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        fs::create_dir_all(&app_data).unwrap();
+        let mut conn = db::open_db(&root.join("nook.db")).unwrap();
+        db::migrate(&mut conn).unwrap();
+        (
+            TestRoot(base),
+            Library {
+                db: Arc::new(Mutex::new(conn)),
+                root,
+                cache,
+                app_data,
+                files_lock: Arc::new(Mutex::new(())),
+            },
+        )
+    }
+
+    fn write_pdf(path: &Path, text: Option<&str>) {
+        let stream = text
+            .map(|text| format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET"))
+            .unwrap_or_default();
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_string(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()),
+        ];
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, pdf).unwrap();
     }
 
     #[test]
@@ -77,7 +151,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            items.len(),
+            items.entries.len(),
             1,
             "an item in two descendants must be deduplicated"
         );
@@ -90,7 +164,7 @@ mod tests {
                 ..ListFilters::default()
             })
             .unwrap();
-        assert_eq!(uncollected.len(), 1);
+        assert_eq!(uncollected.entries.len(), 1);
     }
 
     #[test]
@@ -121,6 +195,531 @@ mod tests {
             )
             .unwrap();
         assert!(lib.update_note(&file_id, "changed", "changed").is_err());
+    }
+
+    #[test]
+    fn migrates_v001_data_without_losing_relations() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        db::MIGRATIONS.to_version(&mut conn, 1).unwrap();
+        conn.execute_batch(
+            "INSERT INTO items (id, type, title, content, stored_path, created_at, updated_at) VALUES
+               ('note', 'note', '旧笔记', 'legacy searchable text', '', '2025-01-01', '2025-01-01'),
+               ('file', 'file', '旧文件.pdf', '', 'files/file/old.pdf', '2025-01-02', '2025-01-02');
+             INSERT INTO collections (id, name, position, created_at) VALUES ('collection', '旧集合', 0, '2025-01-01');
+             INSERT INTO tags (id, name, created_at) VALUES ('tag', '旧标签', '2025-01-01');
+             INSERT INTO item_collections VALUES ('note', 'collection');
+             INSERT INTO item_tags VALUES ('note', 'tag');
+             INSERT INTO attachments VALUES ('note', 'file', 0);",
+        )
+        .unwrap();
+
+        db::MIGRATIONS.to_latest(&mut conn).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM items", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM item_collections", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM item_tags", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM attachments", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM items_fts WHERE items_fts MATCH '\"legacy searchable\"'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn search_supports_fts_short_terms_filters_and_sync() {
+        let lib = library();
+        let work = lib.create_collection("工作", None).unwrap();
+        let archive = lib.create_collection("归档", None).unwrap();
+        let important = lib.create_tag("重要").unwrap();
+        let project = lib.create_tag("项目").unwrap();
+        let note = lib
+            .create_note(
+                "中文资料库",
+                "alpha phrase, literal a\\ token, and 100% complete",
+                &[work.id.clone(), archive.id.clone()],
+            )
+            .unwrap();
+        lib.set_item_tags(&note.id, &[important.id.clone(), project.id.clone()])
+            .unwrap();
+        let file_id = lib
+            .insert_item(
+                "file",
+                "报告.pdf",
+                "",
+                "",
+                "files/report.pdf",
+                10,
+                "application/pdf",
+                "{}",
+                &[],
+            )
+            .unwrap();
+        lib.create_link("https://example.com", "alpha link", &[])
+            .unwrap();
+        {
+            let conn = lib.db.lock().unwrap();
+            conn.execute("UPDATE items SET created_at = '2025-03-04', extracted_text = 'PDF native searchable body' WHERE id = ?1", params![file_id]).unwrap();
+            conn.execute(
+                "UPDATE items SET created_at = '2025-02-03' WHERE id = ?1",
+                params![note.id],
+            )
+            .unwrap();
+        }
+
+        let search = |query: &str| {
+            lib.list_items(&ListFilters {
+                query: Some(query.into()),
+                ..ListFilters::default()
+            })
+            .unwrap()
+        };
+        let chinese = search("中文资料");
+        assert_eq!(chinese.entries[0].item.id, note.id);
+        assert!(chinese.entries[0].snippet.is_some());
+        assert_eq!(
+            search("中文").entries.len(),
+            1,
+            "two-character queries use LIKE"
+        );
+        assert_eq!(search("\"alpha phrase\"").entries.len(), 1);
+        assert_eq!(search("native").entries[0].item.id, file_id);
+        assert_eq!(search("100%").entries.len(), 1);
+        assert_eq!(search("a\\").entries.len(), 1);
+        assert_eq!(
+            search("type:note type:file").entries.len(),
+            2,
+            "types are ORed"
+        );
+        assert_eq!(search("alpha type:note type:file tag:重要 tag:项目 collection:工作 collection:归档 date:>2025-01-01").entries.len(), 1);
+        assert_eq!(search("date:2025-03-04 type:file").entries.len(), 1);
+        assert_eq!(search("date:<2025-03-01 type:note").entries.len(), 1);
+
+        lib.update_note(&note.id, "已重命名", "removed").unwrap();
+        assert!(
+            search("中文资料").entries.is_empty(),
+            "FTS update trigger removes old text"
+        );
+        {
+            let conn = lib.db.lock().unwrap();
+            conn.execute("DELETE FROM items WHERE id = ?1", params![file_id])
+                .unwrap();
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM items_fts WHERE items_fts MATCH '\"native\"'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn saved_views_are_stable_and_cascade_with_context() {
+        let lib = library();
+        let collection = lib.create_collection("工作", None).unwrap();
+        let tag = lib.create_tag("重要").unwrap();
+        let by_collection = lib
+            .create_saved_view(
+                "集合搜索",
+                "资料",
+                "updated",
+                "collection",
+                Some(&collection.id),
+                None,
+            )
+            .unwrap();
+        let by_tag = lib
+            .create_saved_view("标签搜索", "资料", "title", "tag", None, Some(&tag.id))
+            .unwrap();
+        lib.rename_saved_view(&by_collection.id, "重命名").unwrap();
+        assert_eq!(
+            lib.list_saved_views()
+                .unwrap()
+                .iter()
+                .find(|view| view.id == by_collection.id)
+                .unwrap()
+                .name,
+            "重命名"
+        );
+        lib.delete_collection_tree(&collection.id).unwrap();
+        lib.delete_tag(&tag.id).unwrap();
+        assert!(lib.list_saved_views().unwrap().is_empty());
+        assert!(lib.delete_saved_view(&by_tag.id).is_err());
+    }
+
+    #[test]
+    fn pdf_indexing_handles_text_scans_corruption_and_retry() {
+        let (_temp, lib) = disk_library();
+        let text_path = lib.root.join("files/text.pdf");
+        let scan_path = lib.root.join("files/scan.pdf");
+        let broken_path = lib.root.join("files/broken.pdf");
+        write_pdf(&text_path, Some("PDF native text"));
+        write_pdf(&scan_path, None);
+        fs::write(&broken_path, b"not a pdf").unwrap();
+        let text_id = lib
+            .insert_item(
+                "file",
+                "text.pdf",
+                "",
+                "",
+                "files/text.pdf",
+                1,
+                "application/pdf",
+                "{}",
+                &[],
+            )
+            .unwrap();
+        lib.insert_item(
+            "file",
+            "scan.pdf",
+            "",
+            "",
+            "files/scan.pdf",
+            1,
+            "application/pdf",
+            "{}",
+            &[],
+        )
+        .unwrap();
+        lib.insert_item(
+            "file",
+            "broken.pdf",
+            "",
+            "",
+            "files/broken.pdf",
+            1,
+            "application/pdf",
+            "{}",
+            &[],
+        )
+        .unwrap();
+
+        let indexed = lib.index_pending_pdfs(false).unwrap();
+        assert_eq!((indexed.indexed, indexed.failed), (2, 1));
+        assert_eq!(lib.search_index_status().unwrap().failed, 1);
+        let result = lib
+            .list_items(&ListFilters {
+                query: Some("native".into()),
+                ..ListFilters::default()
+            })
+            .unwrap();
+        assert_eq!(result.entries[0].item.id, text_id);
+        assert_eq!(lib.index_pending_pdfs(true).unwrap().failed, 1);
+    }
+
+    #[test]
+    fn media_files_cannot_cross_preview_or_thumbnail_ipc() {
+        let (_temp, lib) = disk_library();
+        let path = lib.root.join("files/media/recording.m4a");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"media").unwrap();
+        let id = lib
+            .insert_item(
+                "file",
+                "recording.m4a",
+                "",
+                "",
+                "files/media/recording.m4a",
+                5,
+                "application/octet-stream",
+                "{}",
+                &[],
+            )
+            .unwrap();
+        assert!(lib.quicklook(&id).is_err());
+        assert_eq!(lib.generate_thumbnail(&id).unwrap(), None);
+        assert_eq!(lib.file_abs_path(&id).unwrap(), None);
+    }
+
+    #[test]
+    fn purge_keeps_files_and_rows_when_any_path_is_invalid() {
+        let (_temp, lib) = disk_library();
+        let stored = lib.root.join("files/valid/data.txt");
+        fs::create_dir_all(stored.parent().unwrap()).unwrap();
+        fs::write(&stored, b"keep me").unwrap();
+        let valid = lib
+            .insert_item(
+                "file",
+                "data.txt",
+                "",
+                "",
+                "files/valid/data.txt",
+                7,
+                "text/plain",
+                "{}",
+                &[],
+            )
+            .unwrap();
+        let invalid = lib
+            .insert_item(
+                "file",
+                "outside.txt",
+                "",
+                "",
+                "../outside.txt",
+                7,
+                "text/plain",
+                "{}",
+                &[],
+            )
+            .unwrap();
+        lib.delete_items(&[valid.clone(), invalid.clone()]).unwrap();
+
+        assert!(lib.purge_items(&[valid.clone(), invalid.clone()]).is_err());
+        assert_eq!(fs::read(&stored).unwrap(), b"keep me");
+        assert!(lib.get_item(&valid).unwrap().item.deleted_at.is_some());
+        assert!(lib.get_item(&invalid).unwrap().item.deleted_at.is_some());
+
+        {
+            let conn = lib.db.lock().unwrap();
+            conn.execute(
+                "UPDATE items SET stored_path = 'files/missing/outside.txt' WHERE id = ?1",
+                params![invalid],
+            )
+            .unwrap();
+        }
+        lib.purge_items(&[valid.clone(), invalid.clone()]).unwrap();
+        assert!(!stored.exists());
+        assert!(lib.get_item(&valid).is_err());
+        assert!(lib.get_item(&invalid).is_err());
+        assert!(fs::read_dir(&lib.root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".purge-")));
+    }
+
+    #[test]
+    fn backup_export_switch_and_move_keep_verified_complete_copies() {
+        let (temp, lib) = disk_library();
+        let output = temp.0.join("output");
+        let destination = temp.0.join("moved");
+        fs::create_dir(&output).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let collection = lib.create_collection("工作", None).unwrap();
+        let note = lib
+            .create_note("说明", "正文", &[collection.id.clone()])
+            .unwrap();
+        let stored = lib.root.join("files/file/data.txt");
+        fs::create_dir_all(stored.parent().unwrap()).unwrap();
+        fs::write(&stored, b"verified file").unwrap();
+        let file_id = lib
+            .insert_item(
+                "file",
+                "data.txt",
+                "",
+                "",
+                "files/file/data.txt",
+                13,
+                "text/plain",
+                "{}",
+                &[collection.id.clone()],
+            )
+            .unwrap();
+        lib.add_attachments(&note.id, &[file_id.clone()]).unwrap();
+        lib.create_saved_view(
+            "工作搜索",
+            "正文",
+            "updated",
+            "collection",
+            Some(&collection.id),
+            None,
+        )
+        .unwrap();
+        let trashed = lib.create_note("回收站笔记", "deleted", &[]).unwrap();
+        lib.delete_items(std::slice::from_ref(&trashed.id)).unwrap();
+        fs::write(lib.cache.join("ignored-thumbnail.png"), b"cache").unwrap();
+        assert!(lib.backup_library(&lib.files_dir()).is_err());
+
+        let backup = PathBuf::from(lib.backup_library(&output).unwrap());
+        assert!(backup.join("nook.db").is_file());
+        assert_eq!(
+            fs::read(backup.join("files/file/data.txt")).unwrap(),
+            b"verified file"
+        );
+        assert!(!backup.join("ignored-thumbnail.png").exists());
+        let backup_db = Connection::open(backup.join("nook.db")).unwrap();
+        assert_eq!(
+            backup_db
+                .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        drop(backup_db);
+
+        let export = PathBuf::from(lib.export_library(&output).unwrap());
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(export.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["items"].as_array().unwrap().len(), 3);
+        assert_eq!(manifest["savedViews"].as_array().unwrap().len(), 1);
+        assert!(export
+            .join(format!("Active/Notes/{}.md", note.id))
+            .is_file());
+        assert!(export
+            .join(format!("Trash/Notes/{}.md", trashed.id))
+            .is_file());
+
+        assert_eq!(
+            PathBuf::from(lib.use_existing_library(&backup).unwrap()),
+            backup.canonicalize().unwrap()
+        );
+        fs::write(destination.join("occupied"), b"occupied").unwrap();
+        assert!(lib.move_library(&destination).is_err());
+        fs::remove_file(destination.join("occupied")).unwrap();
+        let moved = PathBuf::from(lib.move_library(&destination).unwrap());
+        assert_eq!(
+            fs::read(moved.join("files/file/data.txt")).unwrap(),
+            b"verified file"
+        );
+        assert!(stored.is_file(), "the source library is retained");
+        assert_eq!(
+            fs::read_to_string(lib.app_data.join(LOCATION_FILE)).unwrap(),
+            moved.to_string_lossy()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transfer_rejects_symlinks_and_cleans_partial_output() {
+        use std::os::unix::fs::symlink;
+
+        let (temp, lib) = disk_library();
+        let output = temp.0.join("output");
+        fs::create_dir(&output).unwrap();
+        let outside = temp.0.join("outside.txt");
+        fs::write(&outside, b"outside").unwrap();
+        symlink(&outside, lib.root.join("files/link.txt")).unwrap();
+        lib.insert_item(
+            "file",
+            "link.txt",
+            "",
+            "",
+            "files/link.txt",
+            7,
+            "text/plain",
+            "{}",
+            &[],
+        )
+        .unwrap();
+        assert!(lib.backup_library(&output).is_err());
+        assert!(fs::read_dir(&output).unwrap().next().is_none());
+        assert!(lib.safe_stored_path("../outside.txt").is_err());
+        assert!(lib.safe_stored_path("nook.db").is_err());
+        assert!(lib.safe_stored_path("files/link.txt").is_err());
+        fs::remove_file(lib.root.join("files/link.txt")).unwrap();
+        assert!(
+            lib.export_library(&output).is_err(),
+            "missing files fail the whole export"
+        );
+        assert!(fs::read_dir(&output).unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_library_rejects_symlinked_database_and_files_root() {
+        use std::os::unix::fs::symlink;
+
+        let (temp, lib) = disk_library();
+        let output = temp.0.join("output");
+        fs::create_dir(&output).unwrap();
+        let candidate = PathBuf::from(lib.backup_library(&output).unwrap());
+
+        let database = candidate.join("nook.db");
+        let outside_database = temp.0.join("outside.db");
+        fs::rename(&database, &outside_database).unwrap();
+        symlink(&outside_database, &database).unwrap();
+        assert!(lib.use_existing_library(&candidate).is_err());
+        fs::remove_file(&database).unwrap();
+        fs::rename(&outside_database, &database).unwrap();
+
+        let files = candidate.join(FILES_DIR);
+        let outside_files = temp.0.join("outside-files");
+        fs::rename(&files, &outside_files).unwrap();
+        symlink(&outside_files, &files).unwrap();
+        assert!(lib.use_existing_library(&candidate).is_err());
+    }
+
+    #[test]
+    fn export_rejects_malformed_item_metadata_without_partial_output() {
+        let (temp, lib) = disk_library();
+        let output = temp.0.join("output");
+        fs::create_dir(&output).unwrap();
+        lib.insert_item("note", "bad meta", "body", "", "", 0, "", "{bad", &[])
+            .unwrap();
+
+        assert!(lib.export_library(&output).is_err());
+        assert!(fs::read_dir(&output).unwrap().next().is_none());
+    }
+
+    #[test]
+    #[ignore = "release-mode acceptance benchmark"]
+    fn benchmark_100k_fts_hot_query_p95_under_100ms() {
+        let lib = library();
+        {
+            let mut conn = lib.db.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            {
+                let mut insert = tx.prepare(
+                    "INSERT INTO items (id, type, title, content, created_at, updated_at) VALUES (?1, 'note', ?2, ?3, '2025-01-01', '2025-01-01')",
+                ).unwrap();
+                for index in 0..100_000 {
+                    let content = if index % 1_000 == 0 {
+                        "benchmark needle content"
+                    } else {
+                        "ordinary searchable content"
+                    };
+                    insert
+                        .execute(params![
+                            format!("item-{index}"),
+                            format!("Note {index}"),
+                            content
+                        ])
+                        .unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        }
+        let filters = ListFilters {
+            query: Some("needle".into()),
+            ..ListFilters::default()
+        };
+        lib.list_items(&filters).unwrap();
+        let mut timings = Vec::new();
+        for _ in 0..40 {
+            let started = std::time::Instant::now();
+            assert_eq!(lib.list_items(&filters).unwrap().entries.len(), 100);
+            timings.push(started.elapsed());
+        }
+        timings.sort();
+        let p95 = timings[37];
+        eprintln!("100k FTS hot-query p95: {p95:?}");
+        assert!(p95 < std::time::Duration::from_millis(100));
     }
 }
 
@@ -153,6 +752,7 @@ fn row_to_item(row: &Row) -> rusqlite::Result<Item> {
 }
 
 const ITEM_COLS: &str = "i.id, i.type, i.title, i.content, i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at";
+const LIST_ITEM_COLS: &str = "i.id, i.type, i.title, substr(i.content, 1, 240), i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at";
 
 /// Fill `tags` and `collections` on a batch of items in 2 queries (no N+1).
 fn load_relations(conn: &Connection, items: &mut [Item]) -> rusqlite::Result<()> {
@@ -218,8 +818,19 @@ impl Library {
     // ---- setup ---------------------------------------------------------
 
     pub fn init(app: &AppHandle) -> Result<Self, String> {
-        let root = app.path().app_data_dir().map_err(map_err)?;
+        let app_data = app.path().app_data_dir().map_err(map_err)?;
         let cache = app.path().app_cache_dir().map_err(map_err)?;
+        std::fs::create_dir_all(&app_data).map_err(map_err)?;
+        let location_file = app_data.join(LOCATION_FILE);
+        let root = if location_file.exists() {
+            let configured = std::fs::read_to_string(&location_file).map_err(map_err)?;
+            let root = PathBuf::from(configured.trim());
+            transfer::validate_library(&root)
+                .map_err(|error| format!("资料库不可用：{}\n{error}", root.display()))?;
+            root
+        } else {
+            app_data.clone()
+        };
         std::fs::create_dir_all(root.join(FILES_DIR)).map_err(map_err)?;
         std::fs::create_dir_all(cache.join(THUMB_DIR)).map_err(map_err)?;
         let db_path = root.join("nook.db");
@@ -229,6 +840,8 @@ impl Library {
             db: Arc::new(Mutex::new(conn)),
             root,
             cache,
+            app_data,
+            files_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -240,8 +853,93 @@ impl Library {
         self.cache.join(THUMB_DIR)
     }
 
-    pub fn absolute_path(&self, stored_path: &str) -> PathBuf {
-        self.root.join(stored_path)
+    pub(crate) fn safe_stored_path(&self, stored_path: &str) -> Result<PathBuf, String> {
+        let relative = Path::new(stored_path);
+        if relative.is_absolute()
+            || !relative.starts_with(FILES_DIR)
+            || relative.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err("无效的库内文件路径".into());
+        }
+        let path = self.root.join(relative);
+        if path.exists() {
+            let files = self.files_dir().canonicalize().map_err(map_err)?;
+            let canonical = path.canonicalize().map_err(map_err)?;
+            if !canonical.starts_with(files) {
+                return Err("库内文件路径越界".into());
+            }
+        }
+        Ok(path)
+    }
+
+    fn stage_file_dirs(&self, paths: &[String]) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+        let mut seen = HashSet::new();
+        let mut dirs = Vec::new();
+        for stored_path in paths {
+            let path = self.safe_stored_path(stored_path)?;
+            let dir = path
+                .parent()
+                .filter(|dir| *dir != self.files_dir())
+                .ok_or("无效的库内文件目录")?
+                .to_path_buf();
+            match std::fs::symlink_metadata(&dir) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    if seen.insert(dir.clone()) {
+                        dirs.push(dir);
+                    }
+                }
+                Ok(_) => return Err("无效的库内文件目录".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        if dirs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let staging = self.root.join(format!(".purge-{}", Uuid::new_v4()));
+        std::fs::create_dir(&staging).map_err(map_err)?;
+        let mut staged = Vec::new();
+        for (index, source) in dirs.into_iter().enumerate() {
+            let destination = staging.join(index.to_string());
+            if let Err(error) = std::fs::rename(&source, &destination) {
+                let restore = Self::restore_staged(&staged);
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(match restore {
+                    Ok(()) => error.to_string(),
+                    Err(restore_error) => {
+                        format!("删除失败：{error}；恢复文件失败：{restore_error}")
+                    }
+                });
+            }
+            staged.push((source, destination));
+        }
+        Ok(staged)
+    }
+
+    fn restore_staged(staged: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+        for (source, destination) in staged.iter().rev() {
+            std::fs::rename(destination, source).map_err(map_err)?;
+        }
+        if let Some((_, destination)) = staged.first() {
+            if let Some(staging) = destination.parent() {
+                let _ = std::fs::remove_dir(staging);
+            }
+        }
+        Ok(())
+    }
+
+    fn discard_staged(staged: &[(PathBuf, PathBuf)]) {
+        if let Some((_, destination)) = staged.first() {
+            if let Some(staging) = destination.parent() {
+                let _ = std::fs::remove_dir_all(staging);
+            }
+        }
     }
 
     pub fn relative_path(&self, abs: &std::path::Path) -> String {
@@ -275,10 +973,23 @@ impl Library {
 
     // ---- items: read ----------------------------------------------------
 
-    pub fn list_items(&self, f: &ListFilters) -> Result<Vec<Item>, String> {
+    pub fn list_items(&self, f: &ListFilters) -> Result<ListResult, String> {
         let conn = self.db.lock().unwrap();
-        let mut sql = format!("SELECT {ITEM_COLS} FROM items i WHERE 1=1");
+        let query = f.query.as_deref().unwrap_or("").trim();
+        let parsed = search::parse_query(query);
+        let fts_query = search::fts_query(&parsed.text);
+        let snippet_sql = if fts_query.is_some() {
+            "(SELECT snippet(items_fts, -1, '', '', ' … ', 24) FROM items_fts WHERE items_fts.rowid = i.rowid AND items_fts MATCH ?)"
+        } else {
+            "NULL"
+        };
+        let mut sql = format!(
+            "SELECT {LIST_ITEM_COLS}, i.content, i.extracted_text, {snippet_sql} FROM items i WHERE 1=1"
+        );
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        if let Some(fts) = &fts_query {
+            params.push(Box::new(fts.clone()));
+        }
 
         if f.view == "trash" {
             sql.push_str(" AND i.deleted_at IS NOT NULL");
@@ -311,12 +1022,49 @@ impl Library {
             sql.push_str(" AND EXISTS (SELECT 1 FROM item_tags it WHERE it.item_id = i.id AND it.tag_id = ?)");
             params.push(Box::new(tid.clone()));
         }
-        if let Some(q) = &f.query {
-            let pattern = format!("%{}%", q.replace('%', "\\%").replace('_', "\\_"));
-            sql.push_str(" AND (i.title LIKE ? ESCAPE '\\' OR i.content LIKE ? ESCAPE '\\' OR i.url LIKE ? ESCAPE '\\')");
-            params.push(Box::new(pattern.clone()));
-            params.push(Box::new(pattern.clone()));
-            params.push(Box::new(pattern));
+        if !parsed.item_types.is_empty() {
+            let placeholders = vec!["?"; parsed.item_types.len()].join(",");
+            sql.push_str(&format!(" AND i.type IN ({placeholders})"));
+            params.extend(
+                parsed
+                    .item_types
+                    .iter()
+                    .cloned()
+                    .map(|value| Box::new(value) as Box<dyn rusqlite::types::ToSql>),
+            );
+        }
+        for tag in &parsed.tags {
+            sql.push_str(" AND EXISTS (SELECT 1 FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE it.item_id = i.id AND t.name = ? COLLATE NOCASE)");
+            params.push(Box::new(tag.clone()));
+        }
+        for collection in &parsed.collections {
+            sql.push_str(" AND EXISTS (SELECT 1 FROM item_collections ic JOIN collections c ON c.id = ic.collection_id WHERE ic.item_id = i.id AND c.name = ? COLLATE NOCASE)");
+            params.push(Box::new(collection.clone()));
+        }
+        for (op, date) in &parsed.dates {
+            match op {
+                '>' => sql.push_str(" AND date(i.created_at) > date(?)"),
+                '<' => sql.push_str(" AND date(i.created_at) < date(?)"),
+                _ => sql.push_str(" AND date(i.created_at) = date(?)"),
+            }
+            params.push(Box::new(date.clone()));
+        }
+        if let Some(fts) = &fts_query {
+            sql.push_str(" AND i.rowid IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)");
+            params.push(Box::new(fts.clone()));
+        } else {
+            for term in &parsed.text {
+                let pattern = format!(
+                    "%{}%",
+                    term.replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                );
+                sql.push_str(" AND (i.title LIKE ? ESCAPE '\\' OR i.content LIKE ? ESCAPE '\\' OR i.url LIKE ? ESCAPE '\\' OR i.extracted_text LIKE ? ESCAPE '\\')");
+                for _ in 0..4 {
+                    params.push(Box::new(pattern.clone()));
+                }
+            }
         }
 
         let order = if f.view == "recent" && f.sort == "updated" {
@@ -331,23 +1079,48 @@ impl Library {
         };
         sql.push_str(&format!(" ORDER BY {order}"));
 
-        if f.limit > 0 {
+        let limit = if f.limit > 0 {
+            f.limit
+        } else if !query.is_empty() {
+            500
+        } else {
+            0
+        };
+        if limit > 0 {
             sql.push_str(" LIMIT ?");
-            params.push(Box::new(f.limit));
+            params.push(Box::new(limit + 1));
         }
 
-        let mut items: Vec<Item> = {
+        let mut raw: Vec<(Item, String, String, Option<String>)> = {
             let mut stmt = conn.prepare(&sql).map_err(map_err)?;
             let rows = stmt
-                .query_map(
-                    params_from_iter(params.iter().map(|b| b.as_ref())),
-                    row_to_item,
-                )
+                .query_map(params_from_iter(params.iter().map(|b| b.as_ref())), |row| {
+                    Ok((row_to_item(row)?, row.get(13)?, row.get(14)?, row.get(15)?))
+                })
                 .map_err(map_err)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(map_err)?
         };
+        let truncated = limit > 0 && raw.len() > limit as usize;
+        if truncated {
+            raw.truncate(limit as usize);
+        }
+        let mut items: Vec<Item> = raw.iter().map(|(item, _, _, _)| item.clone()).collect();
         load_relations(&conn, &mut items).map_err(map_err)?;
-        Ok(items)
+        let entries = items
+            .into_iter()
+            .zip(raw)
+            .map(|(item, (_, content, extracted, fts_snippet))| ListEntry {
+                snippet: fts_snippet.or_else(|| {
+                    search::plain_snippet(
+                        &[&item.title, &content, &item.url, &extracted],
+                        &parsed.text,
+                    )
+                }),
+                item: item.into(),
+                highlight_terms: parsed.text.clone(),
+            })
+            .collect();
+        Ok(ListResult { entries, truncated })
     }
 
     fn get_item_locked(&self, conn: &Connection, id: &str) -> Result<ItemDetail, String> {
@@ -484,7 +1257,8 @@ impl Library {
     }
 
     pub fn empty_trash(&self) -> Result<(), String> {
-        let conn = self.db.lock().unwrap();
+        let _files = self.files_lock.lock().unwrap();
+        let mut conn = self.db.lock().unwrap();
         let rows: Vec<(String, String)> = {
             let mut stmt = conn
                 .prepare("SELECT id, stored_path FROM items WHERE deleted_at IS NOT NULL AND type = 'file'")
@@ -495,45 +1269,64 @@ impl Library {
             rows.collect::<Result<Vec<_>, _>>().map_err(map_err)?
         };
         let (ids, paths): (Vec<String>, Vec<String>) = rows.into_iter().unzip();
-        for p in &paths {
-            if let Some(dir) = std::path::Path::new(p).parent() {
-                let _ = std::fs::remove_dir_all(self.absolute_path(&dir.to_string_lossy()));
-            }
+        let staged = self.stage_file_dirs(&paths)?;
+        let deleted = (|| {
+            let transaction = conn.transaction().map_err(map_err)?;
+            transaction
+                .execute("DELETE FROM items WHERE deleted_at IS NOT NULL", [])
+                .map_err(map_err)?;
+            transaction.commit().map_err(map_err)
+        })();
+        if let Err(error) = deleted {
+            Self::restore_staged(&staged)?;
+            return Err(error);
         }
+        Self::discard_staged(&staged);
         for id in &ids {
             let _ = std::fs::remove_file(self.thumb_dir().join(format!("{id}.png")));
         }
-        conn.execute("DELETE FROM items WHERE deleted_at IS NOT NULL", [])
-            .map_err(map_err)?;
         Ok(())
     }
 
     /// Permanently delete specific trashed items (and their stored files).
     pub fn purge_items(&self, ids: &[String]) -> Result<(), String> {
-        let conn = self.db.lock().unwrap();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let _files = self.files_lock.lock().unwrap();
+        let mut conn = self.db.lock().unwrap();
         let placeholders = vec!["?"; ids.len()].join(",");
-        let paths: Vec<String> = {
+        let rows: Vec<(String, String)> = {
             let sql = format!(
-                "SELECT stored_path FROM items WHERE deleted_at IS NOT NULL AND type = 'file' AND id IN ({placeholders})"
+                "SELECT id, stored_path FROM items WHERE deleted_at IS NOT NULL AND type = 'file' AND id IN ({placeholders})"
             );
             let mut stmt = conn.prepare(&sql).map_err(map_err)?;
             let rows = stmt
-                .query_map(params_from_iter(ids.iter()), |r| r.get::<_, String>(0))
+                .query_map(params_from_iter(ids.iter()), |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
                 .map_err(map_err)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(map_err)?
         };
-        for p in &paths {
-            if let Some(dir) = std::path::Path::new(p).parent() {
-                let _ = std::fs::remove_dir_all(self.absolute_path(&dir.to_string_lossy()));
-            }
-        }
-        for id in ids {
-            let _ = std::fs::remove_file(self.thumb_dir().join(format!("{id}.png")));
-        }
+        let (file_ids, paths): (Vec<String>, Vec<String>) = rows.into_iter().unzip();
+        let staged = self.stage_file_dirs(&paths)?;
         let sql =
             format!("DELETE FROM items WHERE deleted_at IS NOT NULL AND id IN ({placeholders})");
-        conn.execute(&sql, params_from_iter(ids.iter()))
-            .map_err(map_err)?;
+        let deleted = (|| {
+            let transaction = conn.transaction().map_err(map_err)?;
+            transaction
+                .execute(&sql, params_from_iter(ids.iter()))
+                .map_err(map_err)?;
+            transaction.commit().map_err(map_err)
+        })();
+        if let Err(error) = deleted {
+            Self::restore_staged(&staged)?;
+            return Err(error);
+        }
+        Self::discard_staged(&staged);
+        for id in file_ids {
+            let _ = std::fs::remove_file(self.thumb_dir().join(format!("{id}.png")));
+        }
         Ok(())
     }
 
@@ -986,6 +1779,7 @@ impl Library {
         paths: &[String],
         collection_id: Option<&str>,
     ) -> Result<ImportResult, String> {
+        let _files = self.files_lock.lock().unwrap();
         import::import_files(self, paths, collection_id)
     }
 
@@ -1004,16 +1798,18 @@ impl Library {
     /// Absolute path of a File item's stored file (for in-window preview).
     pub fn file_abs_path(&self, id: &str) -> Result<Option<String>, String> {
         let conn = self.db.lock().unwrap();
-        let stored: Option<String> = conn
+        let stored: Option<(String, String)> = conn
             .query_row(
-                "SELECT stored_path FROM items WHERE id = ?1 AND type = 'file'",
+                "SELECT stored_path, mime FROM items WHERE id = ?1 AND type = 'file'",
                 params![id],
-                |r| r.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(map_err)?;
         Ok(stored
-            .filter(|s| !s.is_empty())
-            .map(|s| self.absolute_path(&s).to_string_lossy().to_string()))
+            .filter(|(path, mime)| !path.is_empty() && !native::is_media(mime, path))
+            .map(|(stored_path, _)| self.safe_stored_path(&stored_path))
+            .transpose()?
+            .map(|path| path.to_string_lossy().to_string()))
     }
 }

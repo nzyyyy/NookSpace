@@ -3,6 +3,7 @@ import {
   ArrowDownAZ,
   ArrowUpDown,
   Calendar,
+  BookmarkPlus,
   Clapperboard,
   File as FileIcon,
   FilePlus2,
@@ -22,10 +23,11 @@ import {
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { cn } from "@/lib/utils";
-import { convertFileSrc, ipc, type Collection, type Item } from "@/core/ipc";
+import { convertFileSrc, ipc, type Collection, type ItemSummary, type SavedView } from "@/core/ipc";
 import { formatRelativeDate, formatSize } from "@/lib/format";
 import { collectionPath } from "@/lib/collections";
 import { tagBadgeClass, tagDotClass } from "@/lib/tag-colors";
+import { isMediaFile } from "@/lib/file-types";
 import { useLibrary, type SortKey, type View } from "@/stores/library";
 import { useUi } from "@/stores/ui";
 import { useTitlebarDrag } from "@/hooks/useTitlebarDrag";
@@ -42,12 +44,20 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
 
 function viewTitle(
   view: View,
   collections: Collection[],
   tags: { id: string; name: string }[],
+  savedViews: SavedView[],
 ): string {
   switch (view.kind) {
     case "all":
@@ -64,10 +74,12 @@ function viewTitle(
       return collectionPath(collections, view.id).map((collection) => collection.name).join(" / ") || "集合";
     case "tag":
       return `# ${tags.find((t) => t.id === view.id)?.name ?? "标签"}`;
+    case "saved":
+      return savedViews.find((item) => item.id === view.id)?.name ?? "保存搜索";
   }
 }
 
-function TypeIcon({ item, className }: { item: Item; className?: string }) {
+function TypeIcon({ item, className }: { item: ItemSummary; className?: string }) {
   if (item.itemType === "note") return <FileText className={className} />;
   if (item.itemType === "link") return <Link2 className={className} />;
   if (item.mime.startsWith("image/")) return <ImageIcon className={className} />;
@@ -81,7 +93,7 @@ function extOf(name: string): string {
   return i > 0 ? name.slice(i + 1).toUpperCase() : "";
 }
 
-function metaLine(item: Item): string {
+function metaLine(item: ItemSummary): string {
   const rel = formatRelativeDate(item.updatedAt);
   if (item.itemType === "note") return `笔记 · ${rel}`;
   if (item.itemType === "file") {
@@ -96,16 +108,30 @@ function metaLine(item: Item): string {
   }
 }
 
+function Highlight({ text, terms }: { text: string; terms: string[] }) {
+  if (!terms.length) return text;
+  const pattern = new RegExp(`(${terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "giu");
+  return text.split(pattern).map((part, index) =>
+    terms.some((term) => part.toLowerCase() === term.toLowerCase()) ? (
+      <mark key={index} className="rounded-sm bg-amber-200/70 px-0.5 text-inherit dark:bg-amber-700/50">{part}</mark>
+    ) : part,
+  );
+}
+
 function ItemRow({
   item,
   selected,
   multi,
   onActivate,
+  snippet,
+  terms,
 }: {
-  item: Item;
+  item: ItemSummary;
   selected: boolean;
   multi: boolean;
   onActivate: (e: React.MouseEvent) => void;
+  snippet?: string;
+  terms: string[];
 }) {
   return (
     <div
@@ -123,7 +149,7 @@ function ItemRow({
       <div className="flex items-center gap-2">
         <TypeIcon item={item} className="size-4 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium">
-          {item.title || "无标题"}
+          <Highlight text={item.title || "无标题"} terms={terms} />
         </span>
         <button
           tabIndex={-1}
@@ -148,6 +174,11 @@ function ItemRow({
       <div className="font-mono text-[11px] tracking-tight text-muted-foreground">
         {metaLine(item)}
       </div>
+      {snippet && (
+        <div className="line-clamp-2 text-[11.5px] leading-4 text-muted-foreground">
+          <Highlight text={snippet} terms={terms} />
+        </div>
+      )}
       {item.tags.length > 0 && (
         <div className="flex flex-wrap gap-1 pt-0.5">
           {item.tags.slice(0, 3).map((t) => (
@@ -172,17 +203,21 @@ function ItemCard({
   selected,
   multi,
   onActivate,
+  snippet,
+  terms,
 }: {
-  item: Item;
+  item: ItemSummary;
   selected: boolean;
   multi: boolean;
   onActivate: (event: React.MouseEvent) => void;
+  snippet?: string;
+  terms: string[];
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [thumbnail, setThumbnail] = useState<string | null>(null);
 
   useEffect(() => {
-    if (item.itemType !== "file" || !ref.current) return;
+    if (item.itemType !== "file" || isMediaFile(item.mime, item.storedPath || item.title) || !ref.current) return;
     const observer = new IntersectionObserver(([entry]) => {
       if (!entry.isIntersecting) return;
       observer.disconnect();
@@ -193,7 +228,8 @@ function ItemCard({
   }, [item.id, item.itemType]);
 
   let secondary = "";
-  if (item.itemType === "note") secondary = item.content.replace(/\s+/g, " ").trim() || "空笔记";
+  if (snippet) secondary = snippet;
+  else if (item.itemType === "note") secondary = item.contentPreview.replace(/\s+/g, " ").trim() || "空笔记";
   else if (item.itemType === "link") {
     try { secondary = new URL(item.url).hostname; } catch { secondary = item.url; }
   } else secondary = metaLine(item);
@@ -223,10 +259,10 @@ function ItemCard({
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-1 p-2.5">
         <div className="flex items-center gap-1.5">
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{item.title || "无标题"}</span>
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium"><Highlight text={item.title || "无标题"} terms={terms} /></span>
           {item.isFavorite ? <Star className="size-3 fill-primary text-primary" /> : null}
         </div>
-        <span className="truncate font-mono text-[10.5px] text-muted-foreground">{secondary}</span>
+        <span className="line-clamp-2 font-mono text-[10.5px] text-muted-foreground"><Highlight text={secondary} terms={terms} /></span>
         {item.tags.length > 0 ? (
           <div className="mt-auto flex gap-1 overflow-hidden pt-1">
             {item.tags.slice(0, 2).map((tag) => (
@@ -253,6 +289,9 @@ export function ItemList() {
     items,
     collections,
     tags,
+    savedViews,
+    snippets,
+    listTruncated,
     view,
     query,
     sort,
@@ -273,9 +312,10 @@ export function ItemList() {
     setItemTags,
     createNote,
     importPaths,
+    createSavedView,
   } = useLibrary();
 
-  const title = viewTitle(view, collections, tags);
+  const title = viewTitle(view, collections, tags, savedViews);
   const isTrash = view.kind === "trash";
   const batch = multiIds;
   const batchSet = useMemo(() => new Set(batch), [batch]);
@@ -296,6 +336,8 @@ export function ItemList() {
 
   const tagPicker = useMemo(() => tags, [tags]);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
   useTitlebarDrag(toolbarRef);
 
   return (
@@ -496,7 +538,7 @@ export function ItemList() {
 
       {/* Search */}
       {!isTrash && (
-        <div className="shrink-0 px-3 pt-2">
+        <div className="flex shrink-0 gap-1 px-3 pt-2">
           <Input
             id="list-search"
             value={query}
@@ -504,7 +546,18 @@ export function ItemList() {
             placeholder="搜索标题、内容、文件名…"
             className="h-7 text-[13px]"
           />
+          {query.trim() && (
+            <Button variant="ghost" size="icon-sm" onClick={() => {
+              setSaveName(query.trim());
+              setSaveOpen(true);
+            }} aria-label="保存当前搜索">
+              <BookmarkPlus className="size-3.5" />
+            </Button>
+          )}
         </div>
+      )}
+      {listTruncated && (
+        <p className="px-4 pt-1 font-mono text-[10.5px] text-muted-foreground">仅显示前 500 条，请继续细化搜索</p>
       )}
 
       {/* Rows */}
@@ -526,6 +579,8 @@ export function ItemList() {
                 selected={selectedId === item.id}
                 multi={batchSet.has(item.id)}
                 onActivate={handleActivate(item.id)}
+                snippet={snippets[item.id]?.text}
+                terms={snippets[item.id]?.terms ?? []}
               />
             ) : (
               <ItemRow
@@ -534,6 +589,8 @@ export function ItemList() {
                 selected={selectedId === item.id}
                 multi={batchSet.has(item.id)}
                 onActivate={handleActivate(item.id)}
+                snippet={snippets[item.id]?.text}
+                terms={snippets[item.id]?.terms ?? []}
               />
             ))}
             {items.length === 0 && (
@@ -546,6 +603,22 @@ export function ItemList() {
           </div>
         )}
       </ScrollArea>
+      <Dialog open={saveOpen} onOpenChange={setSaveOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle className="text-[15px] font-medium">保存搜索</DialogTitle></DialogHeader>
+          <Input autoFocus value={saveName} onChange={(event) => setSaveName(event.target.value)} placeholder="搜索名称" />
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setSaveOpen(false)}>取消</Button>
+            <Button disabled={!saveName.trim()} onClick={() => {
+              void createSavedView(saveName).then((saved) => {
+                if (!saved) return toast.error("保存搜索失败");
+                toast.success("搜索已保存");
+                setSaveOpen(false);
+              });
+            }}>保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

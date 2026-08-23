@@ -86,7 +86,7 @@ fn collect_dir(dir: &Path, collection_id: &str, out: &mut Vec<(PathBuf, Option<S
     }
 }
 
-fn sha256_of(path: &Path) -> Result<String, String> {
+pub(crate) fn sha256_of(path: &Path) -> Result<String, String> {
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
@@ -123,10 +123,26 @@ fn mime_of(name: &str) -> String {
         "ppt" => "application/vnd.ms-powerpoint",
         "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "zip" => "application/zip",
-        "mp4" => "video/mp4",
+        "mp4" | "m4v" => "video/mp4",
         "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "mpeg" | "mpg" => "video/mpeg",
+        "wmv" => "video/x-ms-wmv",
+        "flv" => "video/x-flv",
+        "ogv" => "video/ogg",
+        "3gp" => "video/3gpp",
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
+        "wma" => "audio/x-ms-wma",
+        "aif" | "aiff" => "audio/aiff",
+        "caf" => "audio/x-caf",
         "epub" => "application/epub+zip",
         _ => "application/octet-stream",
     };
@@ -146,9 +162,7 @@ fn import_one(
         return Err("无法识别的文件".into());
     }
     let source = path.to_string_lossy().to_string();
-    let size = std::fs::metadata(path)
-        .map_err(|e| e.to_string())?
-        .len() as i64;
+    let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len() as i64;
     let sha = sha256_of(path)?;
 
     // Dedupe: same source path + same sha256 was imported before.
@@ -180,8 +194,24 @@ fn import_one(
     let rel = lib.relative_path(&dest);
     let meta = serde_json::json!({ "sourcePath": source, "sha256": sha }).to_string();
 
-    let collection_ids: Vec<String> = collection_id.map(|c| vec![c.to_string()]).unwrap_or_default();
-    let id = lib.insert_item("file", &file_name, "", "", &rel, size, &mime_of(&file_name), &meta, &collection_ids)?;
+    let collection_ids: Vec<String> = collection_id
+        .map(|c| vec![c.to_string()])
+        .unwrap_or_default();
+    let mime = mime_of(&file_name);
+    let id = lib.insert_item(
+        "file",
+        &file_name,
+        "",
+        "",
+        &rel,
+        size,
+        &mime,
+        &meta,
+        &collection_ids,
+    )?;
+    if mime == "application/pdf" {
+        let _ = lib.index_pdf_item(&id, &dest);
+    }
     let item = lib.get_item(&id)?.item;
     Ok(Some(ImportOutcome {
         item,

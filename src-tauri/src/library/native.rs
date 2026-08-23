@@ -2,6 +2,17 @@ use std::process::Command;
 
 use crate::library::Library;
 
+pub(super) fn is_media(mime: &str, name: &str) -> bool {
+    const MEDIA_EXTENSIONS: &[&str] = &[
+        "3gp", "aac", "aif", "aiff", "avi", "caf", "flac", "flv", "m4a", "m4v", "mkv", "mov",
+        "mp3", "mp4", "mpeg", "mpg", "oga", "ogg", "ogv", "opus", "wav", "webm", "wma", "wmv",
+    ];
+    let extension = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    mime.starts_with("audio/")
+        || mime.starts_with("video/")
+        || MEDIA_EXTENSIONS.contains(&extension.as_str())
+}
+
 /// Open a File item with the system default app (macOS `open` semantics via
 /// the opener plugin).
 pub fn open_with_default(lib: &Library, id: &str) -> Result<(), String> {
@@ -9,7 +20,7 @@ pub fn open_with_default(lib: &Library, id: &str) -> Result<(), String> {
     if detail.item.item_type != "file" || detail.item.stored_path.is_empty() {
         return Err("该条目没有可打开的文件".into());
     }
-    let abs = lib.absolute_path(&detail.item.stored_path);
+    let abs = lib.safe_stored_path(&detail.item.stored_path)?;
     tauri_plugin_opener::open_path(&abs, None::<&str>).map_err(|e| e.to_string())
 }
 
@@ -20,7 +31,10 @@ pub fn quicklook(lib: &Library, id: &str) -> Result<(), String> {
     if detail.item.item_type != "file" || detail.item.stored_path.is_empty() {
         return Err("该条目没有可预览的文件".into());
     }
-    let abs = lib.absolute_path(&detail.item.stored_path);
+    if is_media(&detail.item.mime, &detail.item.stored_path) {
+        return Err("音视频文件不支持快速查看，请使用默认应用打开".into());
+    }
+    let abs = lib.safe_stored_path(&detail.item.stored_path)?;
     Command::new("qlmanage")
         .arg("-p")
         .arg(&abs)
@@ -37,9 +51,12 @@ pub fn generate_thumbnail(lib: &Library, id: &str) -> Result<Option<String>, Str
     if item.item_type != "file" || item.stored_path.is_empty() {
         return Ok(None);
     }
+    if is_media(&item.mime, &item.stored_path) {
+        return Ok(None);
+    }
 
     let cached = lib.thumb_dir().join(format!("{id}.png"));
-    let abs = lib.absolute_path(&item.stored_path);
+    let abs = lib.safe_stored_path(&item.stored_path)?;
     let needs_regenerate = match std::fs::metadata(&cached) {
         Ok(m) => match std::fs::metadata(&abs) {
             Ok(src) => m.modified().ok() < src.modified().ok(),
@@ -73,5 +90,20 @@ pub fn generate_thumbnail(lib: &Library, id: &str) -> Result<Option<String>, Str
         Ok(Some(cached.to_string_lossy().to_string()))
     } else {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_media;
+
+    #[test]
+    fn media_files_are_not_previewed() {
+        assert!(is_media("audio/mpeg", "track.bin"));
+        assert!(is_media("video/mp4", "movie.bin"));
+        assert!(is_media("application/octet-stream", "recording.M4A"));
+        assert!(is_media("application/octet-stream", "movie.webm"));
+        assert!(!is_media("application/pdf", "document.pdf"));
+        assert!(!is_media("image/png", "image.png"));
     }
 }

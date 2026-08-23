@@ -3,6 +3,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useLibrary } from "@/stores/library";
 import { useUi } from "@/stores/ui";
 import { toast } from "sonner";
+import { isMediaFile } from "@/lib/file-types";
 
 /**
  * Global keyboard shortcuts (Q20 table). Field focus and the palette take
@@ -111,7 +112,14 @@ export function useShortcuts() {
       if (e.key === " ") {
         e.preventDefault();
         if (useUi.getState().quickLookId) useUi.getState().setQuickLookId(null);
-        else if (lib.selectedId) useUi.getState().setQuickLookId(lib.selectedId);
+        else if (lib.selectedId) {
+          const item = lib.items.find((candidate) => candidate.id === lib.selectedId);
+          if (item && isMediaFile(item.mime, item.storedPath || item.title)) {
+            toast.info("音视频文件请使用默认应用打开");
+          } else {
+            useUi.getState().setQuickLookId(lib.selectedId);
+          }
+        }
         return;
       }
       // Delete — soft delete (not in trash view)

@@ -38,6 +38,35 @@ export interface Item {
   collections: string[];
 }
 
+export interface ItemSummary {
+  id: string;
+  itemType: ItemType;
+  title: string;
+  contentPreview: string;
+  url: string;
+  storedPath: string;
+  size: number;
+  mime: string;
+  createdAt: string;
+  updatedAt: string;
+  lastOpenedAt: string;
+  isFavorite: boolean;
+  deletedAt: string | null;
+  tags: Tag[];
+  collections: string[];
+}
+
+export interface ListEntry {
+  item: ItemSummary;
+  snippet: string | null;
+  highlightTerms: string[];
+}
+
+export interface ListResult {
+  entries: ListEntry[];
+  truncated: boolean;
+}
+
 export interface ItemDetail {
   item: Item;
   attachments: Item[];
@@ -79,13 +108,70 @@ export interface LibraryInfo {
   linkCount: number;
 }
 
+export interface SavedView {
+  id: string;
+  name: string;
+  query: string;
+  sort: "updated" | "created" | "title" | "type";
+  view: "all" | "favorites" | "recent" | "uncollected" | "collection" | "tag";
+  collectionId: string | null;
+  tagId: string | null;
+  createdAt: string;
+}
+
+export interface SearchIndexStatus {
+  pending: number;
+  failed: number;
+}
+
+export interface IndexResult {
+  indexed: number;
+  failed: number;
+}
+
 // ---- typed invoke wrappers (the single seam to Rust) ----
 
 export const ipc = {
   getLibraryInfo: () => invoke<LibraryInfo>("get_library_info"),
 
   listItems: (filters: ListFilters) =>
-    invoke<Item[]>("list_items", { filters }),
+    invoke<ListResult>("list_items", { filters }),
+
+  listSavedViews: () => invoke<SavedView[]>("list_saved_views"),
+
+  createSavedView: (input: {
+    name: string;
+    query: string;
+    sort: SavedView["sort"];
+    view: SavedView["view"];
+    collectionId: string | null;
+    tagId: string | null;
+  }) => invoke<SavedView>("create_saved_view", input),
+
+  renameSavedView: (id: string, name: string) =>
+    invoke<void>("rename_saved_view", { id, name }),
+
+  deleteSavedView: (id: string) => invoke<void>("delete_saved_view", { id }),
+
+  getSearchIndexStatus: () =>
+    invoke<SearchIndexStatus>("get_search_index_status"),
+
+  indexPendingPdfs: (retryFailed = false) =>
+    invoke<IndexResult>("index_pending_pdfs", { retryFailed }),
+
+  backupLibrary: (destinationParent: string) =>
+    invoke<string>("backup_library", { destinationParent }),
+
+  exportLibrary: (destinationParent: string) =>
+    invoke<string>("export_library", { destinationParent }),
+
+  moveLibrary: (destination: string) =>
+    invoke<string>("move_library", { destination }),
+
+  useExistingLibrary: (root: string) =>
+    invoke<string>("use_existing_library", { root }),
+
+  restartApp: () => invoke<void>("restart_app"),
 
   getItem: (id: string) => invoke<ItemDetail>("get_item", { id }),
 

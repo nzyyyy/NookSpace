@@ -1,7 +1,9 @@
 //! Thin adapters: map Tauri invoke payloads to `Library` calls.
 //! No business logic lives here.
 
-use tauri::State;
+use std::path::PathBuf;
+
+use tauri::{AppHandle, State};
 
 use crate::library::models::*;
 use crate::library::Library;
@@ -26,9 +28,120 @@ pub async fn get_library_info(state: State<'_, Library>) -> Result<LibraryInfo, 
 pub async fn list_items(
     state: State<'_, Library>,
     filters: ListFilters,
-) -> Result<Vec<Item>, String> {
+) -> Result<ListResult, String> {
     let lib = state.inner().clone();
     blocking(lib, move |l| l.list_items(&filters)).await
+}
+
+#[tauri::command]
+pub async fn list_saved_views(state: State<'_, Library>) -> Result<Vec<SavedView>, String> {
+    let lib = state.inner().clone();
+    blocking(lib, |l| l.list_saved_views()).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn create_saved_view(
+    state: State<'_, Library>,
+    name: String,
+    query: String,
+    sort: String,
+    view: String,
+    collection_id: Option<String>,
+    tag_id: Option<String>,
+) -> Result<SavedView, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| {
+        l.create_saved_view(
+            &name,
+            &query,
+            &sort,
+            &view,
+            collection_id.as_deref(),
+            tag_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn rename_saved_view(
+    state: State<'_, Library>,
+    id: String,
+    name: String,
+) -> Result<(), String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| l.rename_saved_view(&id, &name)).await
+}
+
+#[tauri::command]
+pub async fn delete_saved_view(state: State<'_, Library>, id: String) -> Result<(), String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| l.delete_saved_view(&id)).await
+}
+
+#[tauri::command]
+pub async fn get_search_index_status(
+    state: State<'_, Library>,
+) -> Result<SearchIndexStatus, String> {
+    let lib = state.inner().clone();
+    blocking(lib, |l| l.search_index_status()).await
+}
+
+#[tauri::command]
+pub async fn index_pending_pdfs(
+    state: State<'_, Library>,
+    retry_failed: bool,
+) -> Result<IndexResult, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| l.index_pending_pdfs(retry_failed)).await
+}
+
+#[tauri::command]
+pub async fn backup_library(
+    state: State<'_, Library>,
+    destination_parent: String,
+) -> Result<String, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| {
+        l.backup_library(&PathBuf::from(destination_parent))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn export_library(
+    state: State<'_, Library>,
+    destination_parent: String,
+) -> Result<String, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| {
+        l.export_library(&PathBuf::from(destination_parent))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn move_library(
+    state: State<'_, Library>,
+    destination: String,
+) -> Result<String, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| l.move_library(&PathBuf::from(destination))).await
+}
+
+#[tauri::command]
+pub async fn use_existing_library(
+    state: State<'_, Library>,
+    root: String,
+) -> Result<String, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| l.use_existing_library(&PathBuf::from(root))).await
+}
+
+#[tauri::command]
+pub fn restart_app(app: AppHandle) {
+    app.restart();
 }
 
 #[tauri::command]

@@ -4,7 +4,10 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 pub static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
-    Migrations::new(vec![M::up(include_str!("migrations/001_init.sql"))])
+    Migrations::new(vec![
+        M::up(include_str!("migrations/001_init.sql")),
+        M::up(include_str!("migrations/002_v1.sql")),
+    ])
 });
 
 pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {

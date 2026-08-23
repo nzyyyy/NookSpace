@@ -12,7 +12,7 @@ import {
   Upload,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ipc, type Item } from "@/core/ipc";
+import { ipc, type ItemSummary } from "@/core/ipc";
 import { useLibrary } from "@/stores/library";
 import { useUi } from "@/stores/ui";
 import {
@@ -37,7 +37,7 @@ export function CommandPalette() {
   const { paletteOpen, setPaletteOpen, listLayout, setListLayout } = useUi();
   const lib = useLibrary();
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<Item[]>([]);
+  const [results, setResults] = useState<ItemSummary[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Reset state each time the palette opens.
@@ -51,6 +51,7 @@ export function CommandPalette() {
   // Global search while typing (debounced).
   useEffect(() => {
     if (!paletteOpen) return;
+    let active = true;
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       if (!query.trim()) {
@@ -59,10 +60,13 @@ export function CommandPalette() {
       }
       void ipc
         .listItems({ view: "all", query: query.trim(), sort: "updated", limit: 20 })
-        .then(setResults)
-        .catch(() => setResults([]));
+        .then((result) => active && setResults(result.entries.map((entry) => entry.item)))
+        .catch(() => active && setResults([]));
     }, 150);
-    return () => clearTimeout(timer.current);
+    return () => {
+      active = false;
+      clearTimeout(timer.current);
+    };
   }, [query, paletteOpen]);
 
   const close = () => setPaletteOpen(false);

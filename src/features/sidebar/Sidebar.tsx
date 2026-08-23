@@ -10,6 +10,7 @@ import {
   Laptop,
   Moon,
   Plus,
+  Search,
   Settings,
   Star,
   Sun,
@@ -294,12 +295,14 @@ function RenameDialog({
 type RenameTarget =
   | { kind: "collection"; id: string; name: string }
   | { kind: "tag"; id: string; name: string }
+  | { kind: "saved"; id: string; name: string }
   | null;
 
 export function Sidebar() {
   const {
     collections,
     tags,
+    savedViews,
     view,
     setView,
     createCollection,
@@ -310,6 +313,8 @@ export function Sidebar() {
     deleteTag,
     renameTag,
     setTagColor,
+    renameSavedView,
+    deleteSavedView,
   } = useLibrary();
   const { preference, setPreference } = useTheme();
   const setSettingsOpen = useUi((s) => s.setSettingsOpen);
@@ -377,6 +382,37 @@ export function Sidebar() {
             />
           ))}
         </div>
+
+        {savedViews.length > 0 && (
+          <>
+            <SectionLabel>已保存</SectionLabel>
+            <div className="flex flex-col gap-px">
+              {savedViews.map((saved) => (
+                <ContextMenu key={saved.id}>
+                  <ContextMenuTrigger asChild>
+                    <div>
+                      <SidebarRow
+                        active={view.kind === "saved" && view.id === saved.id}
+                        onClick={() => setView({ kind: "saved", id: saved.id })}
+                        icon={<Search />}
+                        label={saved.name}
+                      />
+                    </div>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent className="min-w-40">
+                    <ContextMenuItem onSelect={() => setRenameTarget({ kind: "saved", id: saved.id, name: saved.name })}>
+                      重命名
+                    </ContextMenuItem>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem variant="destructive" onSelect={() => void deleteSavedView(saved.id)}>
+                      删除保存搜索
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
+              ))}
+            </div>
+          </>
+        )}
 
         {/* Collections */}
         <SectionLabel onAdd={() => setCreating({ kind: "collection", parentId: null })}>集合</SectionLabel>
@@ -495,13 +531,14 @@ export function Sidebar() {
 
       <RenameDialog
         open={renameTarget !== null}
-        title={renameTarget?.kind === "collection" ? "重命名集合" : "重命名标签"}
+        title={renameTarget?.kind === "collection" ? "重命名集合" : renameTarget?.kind === "tag" ? "重命名标签" : "重命名保存搜索"}
         initial={renameTarget?.name ?? ""}
         onClose={() => setRenameTarget(null)}
         onSubmit={(name) => {
           if (!renameTarget) return;
           if (renameTarget.kind === "collection") void renameCollection(renameTarget.id, name);
-          else void renameTag(renameTarget.id, name);
+          else if (renameTarget.kind === "tag") void renameTag(renameTarget.id, name);
+          else void renameSavedView(renameTarget.id, name);
         }}
       />
 

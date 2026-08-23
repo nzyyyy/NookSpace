@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { convertFileSrc, ipc, type Item } from "@/core/ipc";
 import { formatFullDate, formatSize, TYPE_LABEL } from "@/lib/format";
+import { isMediaFile } from "@/lib/file-types";
 import { useLibrary } from "@/stores/library";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -339,6 +340,13 @@ export function DetailPane() {
 
   useEffect(() => () => void saver.current?.flush(), [item?.id]);
   useEffect(() => {
+    const flush = (event: Event) => {
+      (event as CustomEvent<Promise<void>[]>).detail.push(saver.current?.flush() ?? Promise.resolve());
+    };
+    window.addEventListener("nookspace:flush-notes", flush);
+    return () => window.removeEventListener("nookspace:flush-notes", flush);
+  }, []);
+  useEffect(() => {
     if (noteMode === "read") void saver.current?.flush();
   }, [noteMode]);
 
@@ -436,9 +444,11 @@ export function DetailPane() {
                 <DropdownMenuItem onSelect={() => void ipc.openWithDefault(item.id)}>
                   <ExternalLink className="size-3.5" /> 用默认应用打开
                 </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => void ipc.quicklook(item.id)}>
-                  <ImageIcon className="size-3.5" /> 系统快速查看
-                </DropdownMenuItem>
+                {!isMediaFile(item.mime, item.storedPath || item.title) && (
+                  <DropdownMenuItem onSelect={() => void ipc.quicklook(item.id)}>
+                    <ImageIcon className="size-3.5" /> 系统快速查看
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator />
               </>
             )}

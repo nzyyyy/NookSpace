@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { ExternalLink, Eye, File as FileIcon, Image as ImageIcon, X } from "lucide-react";
 import { convertFileSrc, ipc, type ItemDetail } from "@/core/ipc";
 import { formatFullDate, formatSize } from "@/lib/format";
+import { isMediaFile } from "@/lib/file-types";
 import { useUi } from "@/stores/ui";
 import { Button } from "@/components/ui/button";
 
@@ -36,6 +37,7 @@ export function QuickLook() {
 
   if (!quickLookId || !detail) return null;
   const item = detail.item;
+  if (isMediaFile(item.mime, item.storedPath || item.title)) return null;
   const src = absPath ? convertFileSrc(absPath) : null;
 
   return (

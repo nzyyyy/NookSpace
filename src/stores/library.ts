@@ -2,10 +2,14 @@ import { create } from "zustand";
 import {
   type Collection,
   type ImportResult,
+  type IndexResult,
   ipc,
   type Item,
   type ItemDetail,
+  type ItemSummary,
   type LibraryInfo,
+  type SavedView,
+  type SearchIndexStatus,
   type Tag,
   type TagColor,
 } from "@/core/ipc";
@@ -18,7 +22,8 @@ export type View =
   | { kind: "uncollected" }
   | { kind: "trash" }
   | { kind: "collection"; id: string }
-  | { kind: "tag"; id: string };
+  | { kind: "tag"; id: string }
+  | { kind: "saved"; id: string };
 
 export type SortKey = "updated" | "created" | "title" | "type";
 export type NoteMode = "read" | "edit";
@@ -44,13 +49,35 @@ const EMPTY_DETAIL: ItemDetail = {
   attachments: [],
 };
 
+const summaryOf = (item: Item): ItemSummary => ({
+  id: item.id,
+  itemType: item.itemType,
+  title: item.title,
+  contentPreview: item.content.slice(0, 240),
+  url: item.url,
+  storedPath: item.storedPath,
+  size: item.size,
+  mime: item.mime,
+  createdAt: item.createdAt,
+  updatedAt: item.updatedAt,
+  lastOpenedAt: item.lastOpenedAt,
+  isFavorite: item.isFavorite,
+  deletedAt: item.deletedAt,
+  tags: item.tags,
+  collections: item.collections,
+});
+
 interface LibraryState {
   ready: boolean;
   loading: boolean;
   info: LibraryInfo | null;
-  items: Item[];
+  items: ItemSummary[];
   collections: Collection[];
   tags: Tag[];
+  savedViews: SavedView[];
+  searchIndex: SearchIndexStatus | null;
+  snippets: Record<string, { text: string; terms: string[] }>;
+  listTruncated: boolean;
   view: View;
   query: string;
   sort: SortKey;
@@ -86,6 +113,10 @@ interface LibraryState {
   renameTag: (id: string, name: string) => Promise<void>;
   setTagColor: (id: string, color: TagColor | null) => Promise<void>;
   deleteTag: (id: string) => Promise<void>;
+  createSavedView: (name: string) => Promise<SavedView | null>;
+  renameSavedView: (id: string, name: string) => Promise<void>;
+  deleteSavedView: (id: string) => Promise<void>;
+  retryPdfIndex: () => Promise<IndexResult | null>;
   setItemTags: (itemId: string, tagIds: string[]) => Promise<void>;
   toggleFavorite: (id: string) => Promise<void>;
   deleteItems: (ids: string[]) => Promise<void>;
@@ -100,22 +131,27 @@ interface LibraryState {
 }
 
 let queryTimer: ReturnType<typeof setTimeout> | undefined;
+let refreshRequest = 0;
 
 export const useLibrary = create<LibraryState>((set, get) => {
   const currentCollectionId = (view: View): string | null =>
     view.kind === "collection" ? view.id : null;
 
   const filters = () => {
-    const { view, query, sort } = get();
+    const { view, query, sort, savedViews } = get();
+    const saved = view.kind === "saved" ? savedViews.find((item) => item.id === view.id) : null;
+    const effectiveView = saved?.view ?? view.kind;
     const base = {
-      view: view.kind === "collection" || view.kind === "tag" ? "all" : view.kind,
+      view: effectiveView === "collection" || effectiveView === "tag" || effectiveView === "saved"
+        ? "all"
+        : effectiveView,
       sort,
       query: query || null,
     };
     return {
       ...base,
-      collectionId: view.kind === "collection" ? view.id : null,
-      tagId: view.kind === "tag" ? view.id : null,
+      collectionId: saved?.collectionId ?? (view.kind === "collection" ? view.id : null),
+      tagId: saved?.tagId ?? (view.kind === "tag" ? view.id : null),
     };
   };
 
@@ -126,6 +162,10 @@ export const useLibrary = create<LibraryState>((set, get) => {
     items: [],
     collections: [],
     tags: [],
+    savedViews: [],
+    searchIndex: null,
+    snippets: {},
+    listTruncated: false,
     view: { kind: "all" },
     query: "",
     sort: "updated",
@@ -137,35 +177,77 @@ export const useLibrary = create<LibraryState>((set, get) => {
     noteMode: "read",
 
     init: async () => {
-      const [info, items, collections, tags] = await Promise.all([
+      const [info, result, collections, tags, savedViews, searchIndex] = await Promise.all([
         ipc.getLibraryInfo().catch(() => null),
-        ipc.listItems(filters()).catch(() => []),
+        ipc.listItems(filters()).catch(() => ({ entries: [], truncated: false })),
         ipc.listCollections().catch(() => []),
         ipc.listTags().catch(() => []),
+        ipc.listSavedViews().catch(() => []),
+        ipc.getSearchIndexStatus().catch(() => null),
       ]);
-      set({ info, items, collections, tags, ready: true, loading: false });
+      set({
+        info,
+        items: result.entries.map((entry) => entry.item),
+        collections,
+        tags,
+        savedViews,
+        searchIndex,
+        snippets: Object.fromEntries(result.entries.filter((entry) => entry.snippet).map((entry) => [entry.item.id, { text: entry.snippet!, terms: entry.highlightTerms }])),
+        listTruncated: result.truncated,
+        ready: true,
+        loading: false,
+      });
+      void ipc.indexPendingPdfs(false).then(async (indexed) => {
+        const status = await ipc.getSearchIndexStatus().catch(() => null);
+        set({ searchIndex: status });
+        if (indexed.indexed > 0 && get().query) await get().refresh();
+      }).catch(() => undefined);
     },
 
     refresh: async () => {
-      const items = await ipc.listItems(filters()).catch(() => get().items);
+      const request = ++refreshRequest;
+      const result = await ipc.listItems(filters()).catch(() => null);
+      if (request !== refreshRequest) return;
+      if (!result) {
+        set({ loading: false });
+        return;
+      }
       const { selectedId, detail } = get();
       let next = detail;
       if (selectedId && detail) {
         next = await ipc.getItem(selectedId).catch(() => null) ?? detail;
       }
-      set({ items, detail: next, loading: false });
+      if (request !== refreshRequest) return;
+      set({
+        items: result.entries.map((entry) => entry.item),
+        snippets: Object.fromEntries(result.entries.filter((entry) => entry.snippet).map((entry) => [entry.item.id, { text: entry.snippet!, terms: entry.highlightTerms }])),
+        listTruncated: result.truncated,
+        detail: next,
+        loading: false,
+      });
     },
 
     refreshMeta: async () => {
-      const [collections, tags] = await Promise.all([
+      const [collections, tags, savedViews] = await Promise.all([
         ipc.listCollections().catch(() => get().collections),
         ipc.listTags().catch(() => get().tags),
+        ipc.listSavedViews().catch(() => get().savedViews),
       ]);
-      set({ collections, tags });
+      set({ collections, tags, savedViews });
     },
 
     setView: (view) => {
-      set({ view, multiIds: [], multiAnchor: null, selectedId: null, detail: null, noteMode: "read" });
+      const saved = view.kind === "saved" ? get().savedViews.find((item) => item.id === view.id) : null;
+      set({
+        view,
+        query: saved?.query ?? get().query,
+        sort: saved?.sort ?? get().sort,
+        multiIds: [],
+        multiAnchor: null,
+        selectedId: null,
+        detail: null,
+        noteMode: "read",
+      });
       void get().refresh();
     },
 
@@ -290,9 +372,13 @@ export const useLibrary = create<LibraryState>((set, get) => {
       const subtree = collectionSubtreeIds(get().collections, id);
       const count = await ipc.deleteCollectionTree(id).catch(() => 0);
       if (!count) return 0;
-      const v = get().view;
-      if (v.kind === "collection" && subtree.has(v.id)) {
-        set({ view: { kind: "all" }, selectedId: null, detail: null });
+      const { savedViews, view } = get();
+      const saved = view.kind === "saved" ? savedViews.find((item) => item.id === view.id) : null;
+      if (
+        (view.kind === "collection" && subtree.has(view.id))
+        || (saved?.collectionId && subtree.has(saved.collectionId))
+      ) {
+        set({ view: { kind: "all" }, query: "", selectedId: null, detail: null });
       }
       await get().refreshMeta();
       await get().refresh();
@@ -328,13 +414,56 @@ export const useLibrary = create<LibraryState>((set, get) => {
     },
 
     deleteTag: async (id) => {
-      await ipc.deleteTag(id).catch(() => undefined);
-      const v = get().view;
-      if (v.kind === "tag" && v.id === id) {
-        set({ view: { kind: "all" }, selectedId: null, detail: null });
+      const deleted = await ipc.deleteTag(id).then(() => true).catch(() => false);
+      if (!deleted) return;
+      const { savedViews, view } = get();
+      const saved = view.kind === "saved" ? savedViews.find((item) => item.id === view.id) : null;
+      if ((view.kind === "tag" && view.id === id) || saved?.tagId === id) {
+        set({ view: { kind: "all" }, query: "", selectedId: null, detail: null });
       }
       await get().refreshMeta();
       await get().refresh();
+    },
+
+    createSavedView: async (name) => {
+      const { view, query, sort, savedViews } = get();
+      const active = view.kind === "saved" ? savedViews.find((item) => item.id === view.id) : null;
+      const baseView = active?.view ?? (view.kind === "saved" || view.kind === "trash" ? "all" : view.kind);
+      const saved = await ipc.createSavedView({
+        name,
+        query,
+        sort,
+        view: baseView,
+        collectionId: active?.collectionId ?? (view.kind === "collection" ? view.id : null),
+        tagId: active?.tagId ?? (view.kind === "tag" ? view.id : null),
+      }).catch(() => null);
+      if (saved) set({ savedViews: [...get().savedViews, saved] });
+      return saved;
+    },
+
+    renameSavedView: async (id, name) => {
+      const renamed = await ipc.renameSavedView(id, name).then(() => true).catch(() => false);
+      if (renamed) set({ savedViews: get().savedViews.map((item) => item.id === id ? { ...item, name } : item) });
+    },
+
+    deleteSavedView: async (id) => {
+      const deleted = await ipc.deleteSavedView(id).then(() => true).catch(() => false);
+      if (!deleted) return;
+      const currentView = get().view;
+      const active = currentView.kind === "saved" && currentView.id === id;
+      set({
+        savedViews: get().savedViews.filter((item) => item.id !== id),
+        ...(active ? { view: { kind: "all" } as View, query: "", selectedId: null, detail: null } : {}),
+      });
+      if (active) await get().refresh();
+    },
+
+    retryPdfIndex: async () => {
+      const result = await ipc.indexPendingPdfs(true).catch(() => null);
+      const status = await ipc.getSearchIndexStatus().catch(() => null);
+      set({ searchIndex: status });
+      if (result?.indexed && get().query) await get().refresh();
+      return result;
     },
 
     setItemTags: async (itemId, tagIds) => {
@@ -414,7 +543,8 @@ export const useLibrary = create<LibraryState>((set, get) => {
     },
 
     upsertItem: (item) => {
-      const items = get().items.map((i) => (i.id === item.id ? item : i));
+      const summary = summaryOf(item);
+      const items = get().items.map((i) => (i.id === item.id ? summary : i));
       set({ items });
     },
   };

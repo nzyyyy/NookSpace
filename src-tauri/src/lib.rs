@@ -3,6 +3,7 @@ mod library;
 
 use library::Library;
 use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -10,13 +11,38 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let lib = Library::init(app.handle()).map_err(std::io::Error::other)?;
-            app.manage(lib);
+            match Library::init(app.handle()) {
+                Ok(lib) => {
+                    app.manage(lib);
+                }
+                Err(error) => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.hide();
+                    }
+                    let handle = app.handle().clone();
+                    app.dialog()
+                        .message(error)
+                        .title("NookSpace 无法打开资料库")
+                        .kind(MessageDialogKind::Error)
+                        .show(move |_| handle.exit(1));
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_library_info,
             commands::list_items,
+            commands::list_saved_views,
+            commands::create_saved_view,
+            commands::rename_saved_view,
+            commands::delete_saved_view,
+            commands::get_search_index_status,
+            commands::index_pending_pdfs,
+            commands::backup_library,
+            commands::export_library,
+            commands::move_library,
+            commands::use_existing_library,
+            commands::restart_app,
             commands::get_item,
             commands::create_note,
             commands::update_note,
