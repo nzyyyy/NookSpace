@@ -5,10 +5,10 @@ import {
   Folder,
   Inbox,
   Link2,
+  LayoutGrid,
   Plus,
   Search,
   Star,
-  Tag as TagIcon,
   Upload,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -29,9 +29,12 @@ import {
   DialogContent,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { collectionPath } from "@/lib/collections";
+import { tagDotClass } from "@/lib/tag-colors";
+import { cn } from "@/lib/utils";
 
 export function CommandPalette() {
-  const { paletteOpen, setPaletteOpen } = useUi();
+  const { paletteOpen, setPaletteOpen, listLayout, setListLayout } = useUi();
   const lib = useLibrary();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Item[]>([]);
@@ -139,6 +142,12 @@ export function CommandPalette() {
                 <Upload className="size-3.5" /> 导入文件…
                 <kbd className="ml-auto font-mono text-[10px] text-muted-foreground">⇧⌘N</kbd>
               </CommandItem>
+              <CommandItem onSelect={() => {
+                setListLayout(listLayout === "list" ? "grid" : "list");
+                close();
+              }}>
+                <LayoutGrid className="size-3.5" /> 切换为{listLayout === "list" ? "网格" : "列表"}视图
+              </CommandItem>
             </CommandGroup>
 
             <CommandSeparator />
@@ -158,12 +167,12 @@ export function CommandPalette() {
               </CommandItem>
               {lib.collections.map((c) => (
                 <CommandItem key={c.id} onSelect={() => go({ kind: "collection", id: c.id })}>
-                  <Folder className="size-3.5" /> {c.name}
+                  <Folder className="size-3.5" /> {collectionPath(lib.collections, c.id).map((item) => item.name).join(" / ")}
                 </CommandItem>
               ))}
               {lib.tags.map((t) => (
                 <CommandItem key={t.id} onSelect={() => go({ kind: "tag", id: t.id })}>
-                  <TagIcon className="size-3.5" /> {t.name}
+                  <span className={cn("size-2.5 rounded-full", tagDotClass(t.color))} /> {t.name}
                 </CommandItem>
               ))}
             </CommandGroup>

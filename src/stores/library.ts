@@ -7,7 +7,9 @@ import {
   type ItemDetail,
   type LibraryInfo,
   type Tag,
+  type TagColor,
 } from "@/core/ipc";
+import { collectionSubtreeIds } from "@/lib/collections";
 
 export type View =
   | { kind: "all" }
@@ -19,6 +21,7 @@ export type View =
   | { kind: "tag"; id: string };
 
 export type SortKey = "updated" | "created" | "title" | "type";
+export type NoteMode = "read" | "edit";
 
 const EMPTY_DETAIL: ItemDetail = {
   item: {
@@ -56,6 +59,7 @@ interface LibraryState {
   multiAnchor: string | null;
   detail: ItemDetail | null;
   detailLoading: boolean;
+  noteMode: NoteMode;
 
   init: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -67,16 +71,20 @@ interface LibraryState {
   toggleMulti: (id: string, additive: boolean, range: boolean) => Promise<void>;
   clearMulti: () => void;
   openItem: (id: string) => Promise<void>;
+  setNoteMode: (mode: NoteMode) => void;
 
   createNote: () => Promise<Item | null>;
+  saveNote: (id: string, title: string, content: string) => Promise<Item | null>;
   createLink: (url: string, title: string) => Promise<Item | null>;
-  createCollection: (name: string) => Promise<Collection | null>;
+  createCollection: (name: string, parentId?: string | null) => Promise<Collection | null>;
   renameCollection: (id: string, name: string) => Promise<void>;
-  deleteCollection: (id: string) => Promise<void>;
+  moveCollection: (id: string, parentId: string | null, beforeId: string | null) => Promise<boolean>;
+  deleteCollectionTree: (id: string) => Promise<number>;
   addToCollection: (ids: string[], collectionId: string) => Promise<void>;
   removeFromCollection: (ids: string[], collectionId: string) => Promise<void>;
   createTag: (name: string) => Promise<Tag | null>;
   renameTag: (id: string, name: string) => Promise<void>;
+  setTagColor: (id: string, color: TagColor | null) => Promise<void>;
   deleteTag: (id: string) => Promise<void>;
   setItemTags: (itemId: string, tagIds: string[]) => Promise<void>;
   toggleFavorite: (id: string) => Promise<void>;
@@ -126,6 +134,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
     multiAnchor: null,
     detail: null,
     detailLoading: false,
+    noteMode: "read",
 
     init: async () => {
       const [info, items, collections, tags] = await Promise.all([
@@ -156,7 +165,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
     },
 
     setView: (view) => {
-      set({ view, multiIds: [], multiAnchor: null, selectedId: null, detail: null });
+      set({ view, multiIds: [], multiAnchor: null, selectedId: null, detail: null, noteMode: "read" });
       void get().refresh();
     },
 
@@ -173,10 +182,10 @@ export const useLibrary = create<LibraryState>((set, get) => {
 
     select: async (id) => {
       if (id === null) {
-        set({ selectedId: null, detail: null });
+        set({ selectedId: null, detail: null, noteMode: "read" });
         return;
       }
-      set({ selectedId: id, multiIds: [], multiAnchor: null, detailLoading: true });
+      set({ selectedId: id, multiIds: [], multiAnchor: null, detailLoading: true, noteMode: "read" });
       const detail = await ipc.getItem(id).catch(() => null);
       set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
     },
@@ -190,7 +199,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
         set({ multiIds: next, multiAnchor: multiIds.length ? multiAnchor : id });
         if (next.length === 0) set({ selectedId: null, detail: null });
         else if (next.length === 1) {
-          set({ selectedId: next[0] });
+          set({ selectedId: next[0], noteMode: "read" });
           const detail = await ipc.getItem(next[0]).catch(() => null);
           set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
         }
@@ -206,7 +215,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
           return;
         }
       }
-      set({ selectedId: id, multiIds: [], multiAnchor: id });
+      set({ selectedId: id, multiIds: [], multiAnchor: id, noteMode: "read" });
       const detail = await ipc.getItem(id).catch(() => null);
       set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
     },
@@ -217,8 +226,14 @@ export const useLibrary = create<LibraryState>((set, get) => {
       set({ selectedId: id, detailLoading: true });
       void ipc.touchItem(id);
       const detail = await ipc.getItem(id).catch(() => null);
-      set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
+      set({
+        detail: detail ?? EMPTY_DETAIL,
+        detailLoading: false,
+        noteMode: detail?.item.itemType === "note" ? "edit" : "read",
+      });
     },
+
+    setNoteMode: (noteMode) => set({ noteMode }),
 
     createNote: async () => {
       const { view } = get();
@@ -228,7 +243,17 @@ export const useLibrary = create<LibraryState>((set, get) => {
         await get().refresh();
         set({ selectedId: item.id, detail: null, multiIds: [] });
         await get().select(item.id);
+        set({ noteMode: "edit" });
       }
+      return item;
+    },
+
+    saveNote: async (id, title, content) => {
+      const item = await ipc.updateNote(id, title, content).catch(() => null);
+      if (!item) return null;
+      get().upsertItem(item);
+      const detail = get().detail;
+      if (detail?.item.id === id) set({ detail: { ...detail, item } });
       return item;
     },
 
@@ -244,8 +269,8 @@ export const useLibrary = create<LibraryState>((set, get) => {
       return item;
     },
 
-    createCollection: async (name) => {
-      const c = await ipc.createCollection(name, null).catch(() => null);
+    createCollection: async (name, parentId = null) => {
+      const c = await ipc.createCollection(name, parentId).catch(() => null);
       if (c) await get().refreshMeta();
       return c;
     },
@@ -255,14 +280,23 @@ export const useLibrary = create<LibraryState>((set, get) => {
       await get().refreshMeta();
     },
 
-    deleteCollection: async (id) => {
-      await ipc.deleteCollection(id).catch(() => undefined);
+    moveCollection: async (id, parentId, beforeId) => {
+      const moved = await ipc.moveCollection(id, parentId, beforeId).then(() => true).catch(() => false);
+      if (moved) await get().refreshMeta();
+      return moved;
+    },
+
+    deleteCollectionTree: async (id) => {
+      const subtree = collectionSubtreeIds(get().collections, id);
+      const count = await ipc.deleteCollectionTree(id).catch(() => 0);
+      if (!count) return 0;
       const v = get().view;
-      if (v.kind === "collection" && v.id === id) {
+      if (v.kind === "collection" && subtree.has(v.id)) {
         set({ view: { kind: "all" }, selectedId: null, detail: null });
       }
       await get().refreshMeta();
       await get().refresh();
+      return count;
     },
 
     addToCollection: async (ids, collectionId) => {
@@ -284,6 +318,13 @@ export const useLibrary = create<LibraryState>((set, get) => {
     renameTag: async (id, name) => {
       await ipc.renameTag(id, name).catch(() => undefined);
       await get().refreshMeta();
+    },
+
+    setTagColor: async (id, color) => {
+      const tag = await ipc.setTagColor(id, color).catch(() => null);
+      if (!tag) return;
+      set({ tags: get().tags.map((item) => (item.id === id ? tag : item)) });
+      await get().refresh();
     },
 
     deleteTag: async (id) => {

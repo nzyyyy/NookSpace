@@ -1,5 +1,7 @@
 import { create } from "zustand";
 
+export type ListLayout = "list" | "grid";
+
 interface UiState {
   paletteOpen: boolean;
   setPaletteOpen: (open: boolean) => void;
@@ -10,7 +12,12 @@ interface UiState {
 
   quickLookId: string | null;
   setQuickLookId: (id: string | null) => void;
+
+  listLayout: ListLayout;
+  setListLayout: (layout: ListLayout) => void;
 }
+
+const savedLayout = localStorage.getItem("nookspace.list-layout.v1");
 
 export const useUi = create<UiState>((set, get) => ({
   paletteOpen: false,
@@ -22,4 +29,10 @@ export const useUi = create<UiState>((set, get) => ({
 
   quickLookId: null,
   setQuickLookId: (id) => set({ quickLookId: id }),
+
+  listLayout: savedLayout === "grid" ? "grid" : "list",
+  setListLayout: (listLayout) => {
+    localStorage.setItem("nookspace.list-layout.v1", listLayout);
+    set({ listLayout });
+  },
 }));

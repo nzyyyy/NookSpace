@@ -22,6 +22,15 @@ export function useShortcuts() {
         useUi.getState().togglePalette();
         return;
       }
+      // Cmd+E — toggle the selected note between reading and editing.
+      if (mod && e.key.toLowerCase() === "e") {
+        const lib = useLibrary.getState();
+        if (lib.detail?.item.itemType === "note" && !lib.detail.item.deletedAt) {
+          e.preventDefault();
+          lib.setNoteMode(lib.noteMode === "read" ? "edit" : "read");
+        }
+        return;
+      }
       // Cmd+N — new note
       if (mod && !e.shiftKey && e.key.toLowerCase() === "n") {
         e.preventDefault();
@@ -77,13 +86,17 @@ export function useShortcuts() {
       const lib = useLibrary.getState();
 
       // Arrow navigation
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (
+        e.key === "ArrowDown" ||
+        e.key === "ArrowUp" ||
+        (useUi.getState().listLayout === "grid" && (e.key === "ArrowLeft" || e.key === "ArrowRight"))
+      ) {
         e.preventDefault();
         const items = lib.items;
         if (!items.length) return;
         const idx = items.findIndex((i) => i.id === lib.selectedId);
         const next =
-          e.key === "ArrowDown"
+          e.key === "ArrowDown" || e.key === "ArrowRight"
             ? (idx + 1 + items.length) % items.length
             : (idx - 1 + items.length) % items.length;
         void lib.select(items[next].id);

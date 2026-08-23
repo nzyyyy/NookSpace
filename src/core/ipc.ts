@@ -3,11 +3,12 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 // ---- types (mirror src-tauri/src/library/models.rs) ----
 
 export type ItemType = "note" | "file" | "link";
+export type TagColor = "red" | "orange" | "amber" | "green" | "blue" | "purple" | "pink";
 
 export interface Tag {
   id: string;
   name: string;
-  color: string | null;
+  color: TagColor | null;
   emoji: string | null;
 }
 
@@ -118,7 +119,11 @@ export const ipc = {
   renameCollection: (id: string, name: string) =>
     invoke<void>("rename_collection", { id, name }),
 
-  deleteCollection: (id: string) => invoke<void>("delete_collection", { id }),
+  moveCollection: (id: string, parentId: string | null, beforeId: string | null) =>
+    invoke<void>("move_collection", { id, parentId, beforeId }),
+
+  deleteCollectionTree: (id: string) =>
+    invoke<number>("delete_collection_tree", { id }),
 
   addItemsToCollection: (itemIds: string[], collectionId: string) =>
     invoke<void>("add_items_to_collection", { itemIds, collectionId }),
@@ -132,6 +137,9 @@ export const ipc = {
 
   renameTag: (id: string, name: string) =>
     invoke<void>("rename_tag", { id, name }),
+
+  setTagColor: (id: string, color: TagColor | null) =>
+    invoke<Tag>("set_tag_color", { id, color }),
 
   deleteTag: (id: string) => invoke<void>("delete_tag", { id }),
 

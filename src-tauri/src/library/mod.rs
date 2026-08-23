@@ -8,12 +8,14 @@ use uuid::Uuid;
 
 use crate::library::models::*;
 
-pub mod db;pub mod import;
+pub mod db;
+pub mod import;
 pub mod models;
 pub mod native;
 
 const FILES_DIR: &str = "files";
 const THUMB_DIR: &str = "thumb";
+const TAG_COLORS: &[&str] = &["red", "orange", "amber", "green", "blue", "purple", "pink"];
 
 /// The deep module: everything the app knows about its Library lives behind
 /// these methods. The frontend never touches SQL or the filesystem directly.
@@ -22,6 +24,104 @@ pub struct Library {
     db: Arc<Mutex<Connection>>,
     root: PathBuf,
     cache: PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn library() -> Library {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        db::migrate(&mut conn).unwrap();
+        Library {
+            db: Arc::new(Mutex::new(conn)),
+            root: PathBuf::new(),
+            cache: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn collection_tree_moves_filters_and_deletes_without_deleting_items() {
+        let lib = library();
+        let root = lib.create_collection("Root", None).unwrap();
+        let child = lib.create_collection("Child", Some(&root.id)).unwrap();
+        let sibling = lib.create_collection("Sibling", None).unwrap();
+        let note = lib
+            .create_note("Note", "body", &[child.id.clone()])
+            .unwrap();
+
+        lib.add_items_to_collection(&[note.id.clone()], &sibling.id)
+            .unwrap();
+        lib.move_collection(&sibling.id, Some(&root.id), Some(&child.id))
+            .unwrap();
+        assert!(lib
+            .move_collection(&root.id, Some(&child.id), None)
+            .is_err());
+
+        let children: Vec<_> = lib
+            .list_collections()
+            .unwrap()
+            .into_iter()
+            .filter(|collection| collection.parent_id.as_deref() == Some(&root.id))
+            .collect();
+        assert_eq!(
+            children.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            [&sibling.id, &child.id]
+        );
+
+        let items = lib
+            .list_items(&ListFilters {
+                collection_id: Some(root.id.clone()),
+                ..ListFilters::default()
+            })
+            .unwrap();
+        assert_eq!(
+            items.len(),
+            1,
+            "an item in two descendants must be deduplicated"
+        );
+
+        assert_eq!(lib.delete_collection_tree(&root.id).unwrap(), 3);
+        assert_eq!(lib.get_item(&note.id).unwrap().item.id, note.id);
+        let uncollected = lib
+            .list_items(&ListFilters {
+                view: "uncollected".into(),
+                ..ListFilters::default()
+            })
+            .unwrap();
+        assert_eq!(uncollected.len(), 1);
+    }
+
+    #[test]
+    fn note_and_tag_updates_validate_their_inputs() {
+        let lib = library();
+        let tag = lib.create_tag("tag").unwrap();
+        assert!(lib.set_tag_color(&tag.id, Some("cyan")).is_err());
+        assert_eq!(
+            lib.set_tag_color(&tag.id, Some("green"))
+                .unwrap()
+                .color
+                .as_deref(),
+            Some("green")
+        );
+        assert!(lib.create_tag("  ").is_err());
+
+        let file_id = lib
+            .insert_item(
+                "file",
+                "file",
+                "",
+                "",
+                "files/x",
+                1,
+                "text/plain",
+                "{}",
+                &[],
+            )
+            .unwrap();
+        assert!(lib.update_note(&file_id, "changed", "changed").is_err());
+    }
 }
 
 fn uuid() -> String {
@@ -161,9 +261,15 @@ impl Library {
             root: self.root.to_string_lossy().to_string(),
             db_path: self.root.join("nook.db").to_string_lossy().to_string(),
             item_count: count("SELECT COUNT(*) FROM items WHERE deleted_at IS NULL")?,
-            file_count: count("SELECT COUNT(*) FROM items WHERE type='file' AND deleted_at IS NULL")?,
-            note_count: count("SELECT COUNT(*) FROM items WHERE type='note' AND deleted_at IS NULL")?,
-            link_count: count("SELECT COUNT(*) FROM items WHERE type='link' AND deleted_at IS NULL")?,
+            file_count: count(
+                "SELECT COUNT(*) FROM items WHERE type='file' AND deleted_at IS NULL",
+            )?,
+            note_count: count(
+                "SELECT COUNT(*) FROM items WHERE type='note' AND deleted_at IS NULL",
+            )?,
+            link_count: count(
+                "SELECT COUNT(*) FROM items WHERE type='link' AND deleted_at IS NULL",
+            )?,
         })
     }
 
@@ -181,12 +287,24 @@ impl Library {
             if f.view == "favorites" {
                 sql.push_str(" AND i.is_favorite = 1");
             } else if f.view == "uncollected" {
-                sql.push_str(" AND NOT EXISTS (SELECT 1 FROM item_collections ic WHERE ic.item_id = i.id)");
+                sql.push_str(
+                    " AND NOT EXISTS (SELECT 1 FROM item_collections ic WHERE ic.item_id = i.id)",
+                );
             }
         }
 
         if let Some(cid) = &f.collection_id {
-            sql.push_str(" AND EXISTS (SELECT 1 FROM item_collections ic WHERE ic.item_id = i.id AND ic.collection_id = ?)");
+            sql.push_str(
+                " AND EXISTS (\
+                 WITH RECURSIVE descendants(id) AS (\
+                   SELECT ? UNION ALL \
+                   SELECT c.id FROM collections c JOIN descendants d ON c.parent_id = d.id\
+                 ) \
+                 SELECT 1 FROM item_collections ic \
+                 JOIN descendants d ON d.id = ic.collection_id \
+                 WHERE ic.item_id = i.id\
+                 )",
+            );
             params.push(Box::new(cid.clone()));
         }
         if let Some(tid) = &f.tag_id {
@@ -221,7 +339,10 @@ impl Library {
         let mut items: Vec<Item> = {
             let mut stmt = conn.prepare(&sql).map_err(map_err)?;
             let rows = stmt
-                .query_map(params_from_iter(params.iter().map(|b| b.as_ref())), row_to_item)
+                .query_map(
+                    params_from_iter(params.iter().map(|b| b.as_ref())),
+                    row_to_item,
+                )
                 .map_err(map_err)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(map_err)?
         };
@@ -307,22 +428,40 @@ impl Library {
     pub fn update_note(&self, id: &str, title: &str, content: &str) -> Result<Item, String> {
         {
             let conn = self.db.lock().unwrap();
-            conn.execute(
+            let updated = conn.execute(
                 "UPDATE items SET title = ?1, content = ?2, updated_at = datetime('now') WHERE id = ?3 AND type = 'note'",
                 params![title, content, id],
             )
             .map_err(map_err)?;
+            if updated != 1 {
+                return Err(format!("note not found: {id}"));
+            }
         }
         self.get_item(id).map(|d| d.item)
     }
 
-    pub fn create_link(&self, url: &str, title: &str, collection_ids: &[String]) -> Result<Item, String> {
+    pub fn create_link(
+        &self,
+        url: &str,
+        title: &str,
+        collection_ids: &[String],
+    ) -> Result<Item, String> {
         let title = if title.is_empty() {
             url.to_string()
         } else {
             title.to_string()
         };
-        let id = self.insert_item("link", &title, "", url, "", 0, "text/html", "{}", collection_ids)?;
+        let id = self.insert_item(
+            "link",
+            &title,
+            "",
+            url,
+            "",
+            0,
+            "text/html",
+            "{}",
+            collection_ids,
+        )?;
         self.get_item(&id).map(|d| d.item)
     }
 
@@ -330,7 +469,8 @@ impl Library {
         let conn = self.db.lock().unwrap();
         let placeholders = vec!["?"; ids.len()].join(",");
         let sql = format!("UPDATE items SET deleted_at = datetime('now') WHERE id IN ({placeholders}) AND deleted_at IS NULL");
-        conn.execute(&sql, params_from_iter(ids.iter())).map_err(map_err)?;
+        conn.execute(&sql, params_from_iter(ids.iter()))
+            .map_err(map_err)?;
         Ok(())
     }
 
@@ -338,7 +478,8 @@ impl Library {
         let conn = self.db.lock().unwrap();
         let placeholders = vec!["?"; ids.len()].join(",");
         let sql = format!("UPDATE items SET deleted_at = NULL WHERE id IN ({placeholders})");
-        conn.execute(&sql, params_from_iter(ids.iter())).map_err(map_err)?;
+        conn.execute(&sql, params_from_iter(ids.iter()))
+            .map_err(map_err)?;
         Ok(())
     }
 
@@ -389,8 +530,10 @@ impl Library {
         for id in ids {
             let _ = std::fs::remove_file(self.thumb_dir().join(format!("{id}.png")));
         }
-        let sql = format!("DELETE FROM items WHERE deleted_at IS NOT NULL AND id IN ({placeholders})");
-        conn.execute(&sql, params_from_iter(ids.iter())).map_err(map_err)?;
+        let sql =
+            format!("DELETE FROM items WHERE deleted_at IS NOT NULL AND id IN ({placeholders})");
+        conn.execute(&sql, params_from_iter(ids.iter()))
+            .map_err(map_err)?;
         Ok(())
     }
 
@@ -437,11 +580,35 @@ impl Library {
         rows.collect::<Result<Vec<_>, _>>().map_err(map_err)
     }
 
-    pub fn create_collection(&self, name: &str, parent_id: Option<&str>) -> Result<Collection, String> {
+    pub fn create_collection(
+        &self,
+        name: &str,
+        parent_id: Option<&str>,
+    ) -> Result<Collection, String> {
         let conn = self.db.lock().unwrap();
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("集合名称不能为空".into());
+        }
+        if let Some(parent_id) = parent_id {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM collections WHERE id = ?1)",
+                    params![parent_id],
+                    |r| r.get(0),
+                )
+                .map_err(map_err)?;
+            if !exists {
+                return Err("父集合不存在".into());
+            }
+        }
         let id = uuid();
         let position: i64 = conn
-            .query_row("SELECT COALESCE(MAX(position), -1) + 1 FROM collections", [], |r| r.get(0))
+            .query_row(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM collections WHERE parent_id IS ?1",
+                params![parent_id],
+                |r| r.get(0),
+            )
             .map_err(map_err)?;
         conn.execute(
             "INSERT INTO collections (id, name, parent_id, position, created_at) VALUES (?1, ?2, ?3, ?4, datetime('now'))",
@@ -462,19 +629,155 @@ impl Library {
 
     pub fn rename_collection(&self, id: &str, name: &str) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
-        conn.execute("UPDATE collections SET name = ?1 WHERE id = ?2", params![name, id])
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("集合名称不能为空".into());
+        }
+        let updated = conn
+            .execute(
+                "UPDATE collections SET name = ?1 WHERE id = ?2",
+                params![name, id],
+            )
             .map_err(map_err)?;
+        if updated != 1 {
+            return Err("集合不存在".into());
+        }
         Ok(())
     }
 
-    pub fn delete_collection(&self, id: &str) -> Result<(), String> {
-        let conn = self.db.lock().unwrap();
-        conn.execute("DELETE FROM collections WHERE id = ?1", params![id])
+    pub fn move_collection(
+        &self,
+        id: &str,
+        parent_id: Option<&str>,
+        before_id: Option<&str>,
+    ) -> Result<(), String> {
+        if parent_id == Some(id) || before_id == Some(id) {
+            return Err("集合不能移动到自身".into());
+        }
+
+        let mut conn = self.db.lock().unwrap();
+        let tx = conn.transaction().map_err(map_err)?;
+        let old_parent: Option<String> = tx
+            .query_row(
+                "SELECT parent_id FROM collections WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(map_err)?
+            .ok_or_else(|| "集合不存在".to_string())?;
+
+        if let Some(parent_id) = parent_id {
+            let invalid: bool = tx
+                .query_row(
+                    "WITH RECURSIVE descendants(id) AS (\
+                       SELECT id FROM collections WHERE id = ?1 \
+                       UNION ALL \
+                       SELECT c.id FROM collections c JOIN descendants d ON c.parent_id = d.id\
+                     ) SELECT EXISTS(SELECT 1 FROM descendants WHERE id = ?2)",
+                    params![id, parent_id],
+                    |r| r.get(0),
+                )
+                .map_err(map_err)?;
+            if invalid {
+                return Err("不能将集合移动到自己的子集合中".into());
+            }
+            let exists: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM collections WHERE id = ?1)",
+                    params![parent_id],
+                    |r| r.get(0),
+                )
+                .map_err(map_err)?;
+            if !exists {
+                return Err("父集合不存在".into());
+            }
+        }
+
+        let sibling_ids = |parent: Option<&str>| -> Result<Vec<String>, String> {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id FROM collections WHERE parent_id IS ?1 AND id != ?2 \
+                     ORDER BY position, name COLLATE NOCASE",
+                )
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map(params![parent, id], |r| r.get::<_, String>(0))
+                .map_err(map_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(map_err)
+        };
+
+        let mut target = sibling_ids(parent_id)?;
+        let insert_at = if let Some(before_id) = before_id {
+            target
+                .iter()
+                .position(|candidate| candidate == before_id)
+                .ok_or_else(|| "排序目标不属于目标父集合".to_string())?
+        } else {
+            target.len()
+        };
+        target.insert(insert_at, id.to_string());
+
+        tx.execute(
+            "UPDATE collections SET parent_id = ?1 WHERE id = ?2",
+            params![parent_id, id],
+        )
+        .map_err(map_err)?;
+
+        if old_parent.as_deref() != parent_id {
+            for (position, sibling_id) in sibling_ids(old_parent.as_deref())?.iter().enumerate() {
+                tx.execute(
+                    "UPDATE collections SET position = ?1 WHERE id = ?2",
+                    params![position as i64, sibling_id],
+                )
+                .map_err(map_err)?;
+            }
+        }
+        for (position, sibling_id) in target.iter().enumerate() {
+            tx.execute(
+                "UPDATE collections SET position = ?1 WHERE id = ?2",
+                params![position as i64, sibling_id],
+            )
             .map_err(map_err)?;
-        Ok(())
+        }
+        tx.commit().map_err(map_err)
     }
 
-    pub fn add_items_to_collection(&self, item_ids: &[String], collection_id: &str) -> Result<(), String> {
+    pub fn delete_collection_tree(&self, id: &str) -> Result<i64, String> {
+        let mut conn = self.db.lock().unwrap();
+        let tx = conn.transaction().map_err(map_err)?;
+        let count: i64 = tx
+            .query_row(
+                "WITH RECURSIVE descendants(id) AS (\
+                   SELECT id FROM collections WHERE id = ?1 \
+                   UNION ALL \
+                   SELECT c.id FROM collections c JOIN descendants d ON c.parent_id = d.id\
+                 ) SELECT COUNT(*) FROM descendants",
+                params![id],
+                |r| r.get(0),
+            )
+            .map_err(map_err)?;
+        if count == 0 {
+            return Err("集合不存在".into());
+        }
+        tx.execute(
+            "WITH RECURSIVE descendants(id) AS (\
+               SELECT id FROM collections WHERE id = ?1 \
+               UNION ALL \
+               SELECT c.id FROM collections c JOIN descendants d ON c.parent_id = d.id\
+             ) DELETE FROM collections WHERE id IN (SELECT id FROM descendants)",
+            params![id],
+        )
+        .map_err(map_err)?;
+        tx.commit().map_err(map_err)?;
+        Ok(count)
+    }
+
+    pub fn add_items_to_collection(
+        &self,
+        item_ids: &[String],
+        collection_id: &str,
+    ) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
         for item_id in item_ids {
             conn.execute(
@@ -486,7 +789,11 @@ impl Library {
         Ok(())
     }
 
-    pub fn remove_items_from_collection(&self, item_ids: &[String], collection_id: &str) -> Result<(), String> {
+    pub fn remove_items_from_collection(
+        &self,
+        item_ids: &[String],
+        collection_id: &str,
+    ) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
         for item_id in item_ids {
             conn.execute(
@@ -520,6 +827,10 @@ impl Library {
 
     pub fn create_tag(&self, name: &str) -> Result<Tag, String> {
         let conn = self.db.lock().unwrap();
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("标签名称不能为空".into());
+        }
         let exists: Option<i64> = conn
             .query_row(
                 "SELECT 1 FROM tags WHERE name = ?1 COLLATE NOCASE",
@@ -547,14 +858,52 @@ impl Library {
 
     pub fn rename_tag(&self, id: &str, name: &str) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
-        conn.execute("UPDATE tags SET name = ?1 WHERE id = ?2", params![name, id])
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("标签名称不能为空".into());
+        }
+        let updated = conn
+            .execute("UPDATE tags SET name = ?1 WHERE id = ?2", params![name, id])
             .map_err(map_err)?;
+        if updated != 1 {
+            return Err("标签不存在".into());
+        }
         Ok(())
+    }
+
+    pub fn set_tag_color(&self, id: &str, color: Option<&str>) -> Result<Tag, String> {
+        if color.is_some_and(|value| !TAG_COLORS.contains(&value)) {
+            return Err("无效的标签颜色".into());
+        }
+        let conn = self.db.lock().unwrap();
+        let updated = conn
+            .execute(
+                "UPDATE tags SET color = ?1 WHERE id = ?2",
+                params![color, id],
+            )
+            .map_err(map_err)?;
+        if updated != 1 {
+            return Err("标签不存在".into());
+        }
+        conn.query_row(
+            "SELECT id, name, color, emoji FROM tags WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok(Tag {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    color: r.get(2)?,
+                    emoji: r.get(3)?,
+                })
+            },
+        )
+        .map_err(map_err)
     }
 
     pub fn delete_tag(&self, id: &str) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
-        conn.execute("DELETE FROM tags WHERE id = ?1", params![id]).map_err(map_err)?;
+        conn.execute("DELETE FROM tags WHERE id = ?1", params![id])
+            .map_err(map_err)?;
         Ok(())
     }
 
@@ -576,11 +925,19 @@ impl Library {
 
     // ---- attachments -----------------------------------------------------
 
-    pub fn add_attachments(&self, parent_id: &str, child_ids: &[String]) -> Result<ItemDetail, String> {
+    pub fn add_attachments(
+        &self,
+        parent_id: &str,
+        child_ids: &[String],
+    ) -> Result<ItemDetail, String> {
         {
             let conn = self.db.lock().unwrap();
             let parent_type: String = conn
-                .query_row("SELECT type FROM items WHERE id = ?1", params![parent_id], |r| r.get(0))
+                .query_row(
+                    "SELECT type FROM items WHERE id = ?1",
+                    params![parent_id],
+                    |r| r.get(0),
+                )
                 .map_err(map_err)?;
             if parent_type != "note" {
                 return Err("只有笔记可以挂附件".into());
@@ -590,7 +947,11 @@ impl Library {
                     continue;
                 }
                 let child_type: String = conn
-                    .query_row("SELECT type FROM items WHERE id = ?1", params![child_id], |r| r.get(0))
+                    .query_row(
+                        "SELECT type FROM items WHERE id = ?1",
+                        params![child_id],
+                        |r| r.get(0),
+                    )
                     .map_err(map_err)?;
                 if child_type != "file" {
                     continue;
@@ -620,7 +981,11 @@ impl Library {
 
     // ---- import / preview / native ---------------------------------------
 
-    pub fn import_files(&self, paths: &[String], collection_id: Option<&str>) -> Result<ImportResult, String> {
+    pub fn import_files(
+        &self,
+        paths: &[String],
+        collection_id: Option<&str>,
+    ) -> Result<ImportResult, String> {
         import::import_files(self, paths, collection_id)
     }
 

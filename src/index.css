@@ -36,6 +36,30 @@
   --radius-3xl: calc(var(--radius) * 2.2);
 }
 
+@layer components {
+  .markdown-body {
+    @apply text-[14px] leading-7 text-foreground/90;
+  }
+
+  .markdown-body h1 { @apply mt-7 mb-3 text-2xl font-semibold tracking-tight; }
+  .markdown-body h2 { @apply mt-6 mb-2 text-xl font-semibold tracking-tight; }
+  .markdown-body h3 { @apply mt-5 mb-2 text-base font-semibold; }
+  .markdown-body p { @apply my-3; }
+  .markdown-body ul { @apply my-3 list-disc pl-6; }
+  .markdown-body ol { @apply my-3 list-decimal pl-6; }
+  .markdown-body li { @apply my-1; }
+  .markdown-body blockquote { @apply my-4 border-l-2 border-primary/40 pl-4 text-muted-foreground; }
+  .markdown-body a { @apply text-primary underline underline-offset-2; }
+  .markdown-body code { @apply rounded bg-muted px-1 py-0.5 font-mono text-[12.5px]; }
+  .markdown-body pre { @apply my-4 overflow-x-auto rounded-md bg-muted p-3; }
+  .markdown-body pre code { @apply bg-transparent p-0; }
+  .markdown-body table { @apply my-4 w-full border-collapse text-[13px]; }
+  .markdown-body th, .markdown-body td { @apply border border-border px-2 py-1.5 text-left; }
+  .markdown-body th { @apply bg-muted font-medium; }
+  .markdown-body input[type="checkbox"] { @apply mr-1.5 align-middle; }
+  .markdown-body hr { @apply my-6 border-border; }
+}
+
 :root {
   /* Nook palette — paper & pine */
   --background: #f7f6f3;

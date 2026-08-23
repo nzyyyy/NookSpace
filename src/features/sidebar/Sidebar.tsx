@@ -1,6 +1,8 @@
 import { useRef, useState } from "react";
 import {
   Check,
+  ChevronDown,
+  ChevronRight,
   Clock,
   Folder,
   FolderPlus,
@@ -11,11 +13,13 @@ import {
   Settings,
   Star,
   Sun,
-  Tag as TagIcon,
   Trash2,
   X,
 } from "lucide-react";
+import type { Collection } from "@/core/ipc";
 import { cn } from "@/lib/utils";
+import { buildCollectionTree, collectionPath, collectionSubtreeIds, flattenCollectionTree, type CollectionTreeNode } from "@/lib/collections";
+import { TAG_COLORS, tagDotClass } from "@/lib/tag-colors";
 import { useLibrary } from "@/stores/library";
 import { useTheme, type ThemePreference } from "@/stores/theme";
 import { useUi } from "@/stores/ui";
@@ -27,6 +31,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
@@ -36,6 +43,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { toast } from "sonner";
 
 const SMART_VIEWS: { kind: "favorites" | "recent" | "uncollected"; label: string; icon: typeof Star }[] = [
   { kind: "favorites", label: "收藏", icon: Star },
@@ -98,6 +106,107 @@ function SidebarRow({
       {children}
     </div>
   );
+}
+
+function CollectionRows({
+  nodes,
+  depth = 0,
+  activeId,
+  collapsed,
+  onToggle,
+  onCreateChild,
+  onRename,
+  onMove,
+  onDelete,
+  onDrop,
+}: {
+  nodes: CollectionTreeNode<Collection>[];
+  depth?: number;
+  activeId: string | null;
+  collapsed: Set<string>;
+  onToggle: (id: string) => void;
+  onCreateChild: (id: string) => void;
+  onRename: (collection: Collection) => void;
+  onMove: (collection: Collection) => void;
+  onDelete: (collection: Collection) => void;
+  onDrop: (draggedId: string, target: Collection, zone: "before" | "inside" | "after", siblings: Collection[]) => void;
+}) {
+  return nodes.map((node, index) => {
+    const hasChildren = node.children.length > 0;
+    const isCollapsed = collapsed.has(node.id);
+    return (
+      <div key={node.id}>
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div
+              draggable
+              onDragStart={(event) => event.dataTransfer.setData("text/x-nookspace-collection", node.id)}
+              onDragOver={(event) => {
+                if (event.dataTransfer.types.includes("text/x-nookspace-collection")) event.preventDefault();
+              }}
+              onDrop={(event) => {
+                const draggedId = event.dataTransfer.getData("text/x-nookspace-collection");
+                if (!draggedId) return;
+                event.preventDefault();
+                const rect = event.currentTarget.getBoundingClientRect();
+                const ratio = (event.clientY - rect.top) / rect.height;
+                onDrop(draggedId, node, ratio < 0.25 ? "before" : ratio > 0.75 ? "after" : "inside", nodes);
+              }}
+              className="flex items-center"
+              style={{ paddingLeft: depth * 12 }}
+            >
+              <button
+                type="button"
+                className="flex size-5 shrink-0 items-center justify-center text-muted-foreground"
+                onClick={() => hasChildren && onToggle(node.id)}
+                aria-label={hasChildren ? (isCollapsed ? "展开集合" : "折叠集合") : undefined}
+                aria-expanded={hasChildren ? !isCollapsed : undefined}
+              >
+                {hasChildren ? (isCollapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />) : null}
+              </button>
+              <div className="min-w-0 flex-1">
+                <SidebarRow
+                  active={activeId === node.id}
+                  onClick={() => useLibrary.getState().setView({ kind: "collection", id: node.id })}
+                  icon={<Folder />}
+                  label={node.name}
+                />
+              </div>
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent className="min-w-44">
+            <ContextMenuItem onSelect={() => onCreateChild(node.id)}>新建子集合</ContextMenuItem>
+            <ContextMenuItem disabled={index === 0} onSelect={() => {
+              const before = nodes[index - 1];
+              if (before) void useLibrary.getState().moveCollection(node.id, node.parentId, before.id);
+            }}>上移</ContextMenuItem>
+            <ContextMenuItem disabled={index === nodes.length - 1} onSelect={() => {
+              const before = nodes[index + 2]?.id ?? null;
+              void useLibrary.getState().moveCollection(node.id, node.parentId, before);
+            }}>下移</ContextMenuItem>
+            <ContextMenuItem onSelect={() => onMove(node)}>移动到…</ContextMenuItem>
+            <ContextMenuItem onSelect={() => onRename(node)}>重命名</ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem variant="destructive" onSelect={() => onDelete(node)}>删除集合</ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+        {hasChildren && !isCollapsed ? (
+          <CollectionRows
+            nodes={node.children}
+            depth={depth + 1}
+            activeId={activeId}
+            collapsed={collapsed}
+            onToggle={onToggle}
+            onCreateChild={onCreateChild}
+            onRename={onRename}
+            onMove={onMove}
+            onDelete={onDelete}
+            onDrop={onDrop}
+          />
+        ) : null}
+      </div>
+    );
+  });
 }
 
 function CreateInput({
@@ -194,21 +303,54 @@ export function Sidebar() {
     view,
     setView,
     createCollection,
-    deleteCollection,
+    moveCollection,
+    deleteCollectionTree,
     renameCollection,
     createTag,
     deleteTag,
     renameTag,
+    setTagColor,
   } = useLibrary();
   const { preference, setPreference } = useTheme();
   const setSettingsOpen = useUi((s) => s.setSettingsOpen);
-  const [creating, setCreating] = useState<"collection" | "tag" | null>(null);
+  const [creating, setCreating] = useState<{ kind: "collection"; parentId: string | null } | { kind: "tag" } | null>(null);
   const [renameTarget, setRenameTarget] = useState<RenameTarget>(null);
+  const [moveTarget, setMoveTarget] = useState<Collection | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Collection | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const headerRef = useRef<HTMLDivElement | null>(null);
   useTitlebarDrag(headerRef);
 
   const themeCycle: ThemePreference[] = ["system", "light", "dark"];
   const ThemeIcon = preference === "light" ? Sun : preference === "dark" ? Moon : Laptop;
+  const collectionTree = buildCollectionTree(collections);
+  const flatCollections = flattenCollectionTree(collectionTree);
+  const activeCollectionId = view.kind === "collection" ? view.id : null;
+  const moveExcluded = moveTarget ? collectionSubtreeIds(collections, moveTarget.id) : new Set<string>();
+
+  const dropCollection = async (
+    draggedId: string,
+    target: Collection,
+    zone: "before" | "inside" | "after",
+    siblings: Collection[],
+  ) => {
+    if (draggedId === target.id) return;
+    let parentId = target.parentId;
+    let beforeId: string | null = target.id;
+    if (zone === "inside") {
+      parentId = target.id;
+      beforeId = null;
+      setCollapsed((current) => {
+        const next = new Set(current);
+        next.delete(target.id);
+        return next;
+      });
+    } else if (zone === "after") {
+      const index = siblings.findIndex((item) => item.id === target.id);
+      beforeId = siblings[index + 1]?.id ?? null;
+    }
+    if (!(await moveCollection(draggedId, parentId, beforeId))) toast.error("无法移动集合");
+  };
 
   return (
     <aside className="flex w-[220px] shrink-0 flex-col border-r border-border bg-background">
@@ -237,45 +379,42 @@ export function Sidebar() {
         </div>
 
         {/* Collections */}
-        <SectionLabel onAdd={() => setCreating("collection")}>集合</SectionLabel>
+        <SectionLabel onAdd={() => setCreating({ kind: "collection", parentId: null })}>集合</SectionLabel>
         <div className="flex flex-col gap-px">
-          {collections.map((c) => (
-            <ContextMenu key={c.id}>
-              <ContextMenuTrigger asChild>
-                <div>
-                  <SidebarRow
-                    active={view.kind === "collection" && view.id === c.id}
-                    onClick={() => setView({ kind: "collection", id: c.id })}
-                    icon={<Folder />}
-                    label={c.name}
-                  />
-                </div>
-              </ContextMenuTrigger>
-              <ContextMenuContent className="min-w-40">
-                <ContextMenuItem onSelect={() => setRenameTarget({ kind: "collection", id: c.id, name: c.name })}>
-                  重命名
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem
-                  variant="destructive"
-                  onSelect={() => void deleteCollection(c.id)}
-                >
-                  删除集合
-                </ContextMenuItem>
-              </ContextMenuContent>
-            </ContextMenu>
-          ))}
-          {creating === "collection" && (
+          <CollectionRows
+            nodes={collectionTree}
+            activeId={activeCollectionId}
+            collapsed={collapsed}
+            onToggle={(id) => setCollapsed((current) => {
+              const next = new Set(current);
+              if (next.has(id)) next.delete(id);
+              else next.add(id);
+              return next;
+            })}
+            onCreateChild={(parentId) => {
+              setCreating({ kind: "collection", parentId });
+              setCollapsed((current) => {
+                const next = new Set(current);
+                next.delete(parentId);
+                return next;
+              });
+            }}
+            onRename={(collection) => setRenameTarget({ kind: "collection", id: collection.id, name: collection.name })}
+            onMove={setMoveTarget}
+            onDelete={setDeleteTarget}
+            onDrop={(draggedId, target, zone, siblings) => void dropCollection(draggedId, target, zone, siblings)}
+          />
+          {creating?.kind === "collection" && (
             <CreateInput
-              placeholder="集合名称"
+              placeholder={creating.parentId ? "子集合名称" : "集合名称"}
               onConfirm={(name) => {
-                void createCollection(name);
+                void createCollection(name, creating.parentId);
                 setCreating(null);
               }}
               onCancel={() => setCreating(null)}
             />
           )}
-          {collections.length === 0 && creating !== "collection" && (
+          {collections.length === 0 && creating?.kind !== "collection" && (
             <div className="px-2 py-1 text-[12px] text-muted-foreground">
               <FolderPlus className="mr-1 inline size-3" />
               还没有集合
@@ -284,7 +423,7 @@ export function Sidebar() {
         </div>
 
         {/* Tags */}
-        <SectionLabel onAdd={() => setCreating("tag")}>标签</SectionLabel>
+        <SectionLabel onAdd={() => setCreating({ kind: "tag" })}>标签</SectionLabel>
         <div className="flex flex-col gap-px">
           {tags.map((t) => (
             <ContextMenu key={t.id}>
@@ -293,7 +432,7 @@ export function Sidebar() {
                   <SidebarRow
                     active={view.kind === "tag" && view.id === t.id}
                     onClick={() => setView({ kind: "tag", id: t.id })}
-                    icon={<TagIcon />}
+                    icon={<span className={cn("size-2.5 rounded-full", tagDotClass(t.color))} />}
                     label={t.name}
                   />
                 </div>
@@ -302,6 +441,18 @@ export function Sidebar() {
                 <ContextMenuItem onSelect={() => setRenameTarget({ kind: "tag", id: t.id, name: t.name })}>
                   重命名
                 </ContextMenuItem>
+                <ContextMenuSub>
+                  <ContextMenuSubTrigger>颜色</ContextMenuSubTrigger>
+                  <ContextMenuSubContent className="min-w-32">
+                    {TAG_COLORS.map((color) => (
+                      <ContextMenuItem key={color.value} onSelect={() => void setTagColor(t.id, color.value)}>
+                        <span className={cn("size-2.5 rounded-full", color.dot)} /> {color.label}
+                      </ContextMenuItem>
+                    ))}
+                    <ContextMenuSeparator />
+                    <ContextMenuItem onSelect={() => void setTagColor(t.id, null)}>清除颜色</ContextMenuItem>
+                  </ContextMenuSubContent>
+                </ContextMenuSub>
                 <ContextMenuSeparator />
                 <ContextMenuItem variant="destructive" onSelect={() => void deleteTag(t.id)}>
                   删除标签
@@ -309,7 +460,7 @@ export function Sidebar() {
               </ContextMenuContent>
             </ContextMenu>
           ))}
-          {creating === "tag" && (
+          {creating?.kind === "tag" && (
             <CreateInput
               placeholder="标签名称"
               onConfirm={(name) => {
@@ -353,6 +504,44 @@ export function Sidebar() {
           else void renameTag(renameTarget.id, name);
         }}
       />
+
+      <Dialog open={moveTarget !== null} onOpenChange={(open) => !open && setMoveTarget(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle className="text-[15px] font-medium">移动「{moveTarget?.name}」</DialogTitle></DialogHeader>
+          <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
+            <Button variant="ghost" className="justify-start" disabled={moveTarget?.parentId === null} onClick={() => {
+              if (moveTarget) void moveCollection(moveTarget.id, null, null);
+              setMoveTarget(null);
+            }}>顶层</Button>
+            {moveTarget ? flatCollections
+              .filter(({ collection }) => !moveExcluded.has(collection.id))
+              .map(({ collection }) => (
+                <Button key={collection.id} variant="ghost" className="justify-start" disabled={moveTarget.parentId === collection.id} onClick={() => {
+                  void moveCollection(moveTarget.id, collection.id, null);
+                  setMoveTarget(null);
+                }}>
+                  {collectionPath(collections, collection.id).map((item) => item.name).join(" / ")}
+                </Button>
+              )) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle className="text-[15px] font-medium">删除集合子树？</DialogTitle></DialogHeader>
+          <p className="text-[13px] text-muted-foreground">
+            将删除「{deleteTarget?.name}」及其下的所有集合，共 {deleteTarget ? collectionSubtreeIds(collections, deleteTarget.id).size : 0} 个。条目本身不会被删除。
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleteTarget(null)}>取消</Button>
+            <Button variant="destructive" onClick={() => {
+              if (deleteTarget) void deleteCollectionTree(deleteTarget.id);
+              setDeleteTarget(null);
+            }}>删除集合</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </aside>
   );
 }

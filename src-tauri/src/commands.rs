@@ -45,7 +45,10 @@ pub async fn create_note(
     collection_ids: Vec<String>,
 ) -> Result<Item, String> {
     let lib = state.inner().clone();
-    blocking(lib, move |l| l.create_note(&title, &content, &collection_ids)).await
+    blocking(lib, move |l| {
+        l.create_note(&title, &content, &collection_ids)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -123,7 +126,10 @@ pub async fn create_collection(
     parent_id: Option<String>,
 ) -> Result<Collection, String> {
     let lib = state.inner().clone();
-    blocking(lib, move |l| l.create_collection(&name, parent_id.as_deref())).await
+    blocking(lib, move |l| {
+        l.create_collection(&name, parent_id.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -137,9 +143,23 @@ pub async fn rename_collection(
 }
 
 #[tauri::command]
-pub async fn delete_collection(state: State<'_, Library>, id: String) -> Result<(), String> {
+pub async fn move_collection(
+    state: State<'_, Library>,
+    id: String,
+    parent_id: Option<String>,
+    before_id: Option<String>,
+) -> Result<(), String> {
     let lib = state.inner().clone();
-    blocking(lib, move |l| l.delete_collection(&id)).await
+    blocking(lib, move |l| {
+        l.move_collection(&id, parent_id.as_deref(), before_id.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_collection_tree(state: State<'_, Library>, id: String) -> Result<i64, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| l.delete_collection_tree(&id)).await
 }
 
 #[tauri::command]
@@ -149,7 +169,10 @@ pub async fn add_items_to_collection(
     collection_id: String,
 ) -> Result<(), String> {
     let lib = state.inner().clone();
-    blocking(lib, move |l| l.add_items_to_collection(&item_ids, &collection_id)).await
+    blocking(lib, move |l| {
+        l.add_items_to_collection(&item_ids, &collection_id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -159,7 +182,10 @@ pub async fn remove_items_from_collection(
     collection_id: String,
 ) -> Result<(), String> {
     let lib = state.inner().clone();
-    blocking(lib, move |l| l.remove_items_from_collection(&item_ids, &collection_id)).await
+    blocking(lib, move |l| {
+        l.remove_items_from_collection(&item_ids, &collection_id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -178,6 +204,16 @@ pub async fn create_tag(state: State<'_, Library>, name: String) -> Result<Tag, 
 pub async fn rename_tag(state: State<'_, Library>, id: String, name: String) -> Result<(), String> {
     let lib = state.inner().clone();
     blocking(lib, move |l| l.rename_tag(&id, &name)).await
+}
+
+#[tauri::command]
+pub async fn set_tag_color(
+    state: State<'_, Library>,
+    id: String,
+    color: Option<String>,
+) -> Result<Tag, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| l.set_tag_color(&id, color.as_deref())).await
 }
 
 #[tauri::command]
@@ -223,7 +259,10 @@ pub async fn import_files(
     collection_id: Option<String>,
 ) -> Result<ImportResult, String> {
     let lib = state.inner().clone();
-    blocking(lib, move |l| l.import_files(&paths, collection_id.as_deref())).await
+    blocking(lib, move |l| {
+        l.import_files(&paths, collection_id.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]

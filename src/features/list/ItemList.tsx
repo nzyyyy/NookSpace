@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownAZ,
   ArrowUpDown,
@@ -11,7 +11,9 @@ import {
   FolderOpen,
   Image as ImageIcon,
   Link2,
+  List,
   ListPlus,
+  LayoutGrid,
   Music,
   Plus,
   Star,
@@ -20,9 +22,12 @@ import {
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { cn } from "@/lib/utils";
-import { type Item } from "@/core/ipc";
+import { convertFileSrc, ipc, type Collection, type Item } from "@/core/ipc";
 import { formatRelativeDate, formatSize } from "@/lib/format";
+import { collectionPath } from "@/lib/collections";
+import { tagBadgeClass, tagDotClass } from "@/lib/tag-colors";
 import { useLibrary, type SortKey, type View } from "@/stores/library";
+import { useUi } from "@/stores/ui";
 import { useTitlebarDrag } from "@/hooks/useTitlebarDrag";
 import { EmptyState } from "@/features/empty/EmptyState";
 import { Button } from "@/components/ui/button";
@@ -41,7 +46,7 @@ import { toast } from "sonner";
 
 function viewTitle(
   view: View,
-  collections: { id: string; name: string }[],
+  collections: Collection[],
   tags: { id: string; name: string }[],
 ): string {
   switch (view.kind) {
@@ -56,7 +61,7 @@ function viewTitle(
     case "trash":
       return "回收站";
     case "collection":
-      return collections.find((c) => c.id === view.id)?.name ?? "集合";
+      return collectionPath(collections, view.id).map((collection) => collection.name).join(" / ") || "集合";
     case "tag":
       return `# ${tags.find((t) => t.id === view.id)?.name ?? "标签"}`;
   }
@@ -148,7 +153,7 @@ function ItemRow({
           {item.tags.slice(0, 3).map((t) => (
             <span
               key={t.id}
-              className="rounded bg-muted px-1 py-px text-[10.5px] text-muted-foreground"
+              className={cn("rounded px-1 py-px text-[10.5px]", tagBadgeClass(t.color))}
             >
               {t.name}
             </span>
@@ -162,6 +167,78 @@ function ItemRow({
   );
 }
 
+function ItemCard({
+  item,
+  selected,
+  multi,
+  onActivate,
+}: {
+  item: Item;
+  selected: boolean;
+  multi: boolean;
+  onActivate: (event: React.MouseEvent) => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [thumbnail, setThumbnail] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (item.itemType !== "file" || !ref.current) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) return;
+      observer.disconnect();
+      void ipc.generateThumbnail(item.id).then((path) => setThumbnail(path ? convertFileSrc(path) : null)).catch(() => undefined);
+    }, { rootMargin: "120px" });
+    observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, [item.id, item.itemType]);
+
+  let secondary = "";
+  if (item.itemType === "note") secondary = item.content.replace(/\s+/g, " ").trim() || "空笔记";
+  else if (item.itemType === "link") {
+    try { secondary = new URL(item.url).hostname; } catch { secondary = item.url; }
+  } else secondary = metaLine(item);
+
+  return (
+    <div
+      ref={ref}
+      role="button"
+      tabIndex={-1}
+      onClick={onActivate}
+      style={{ contentVisibility: "auto" }}
+      className={cn(
+        "group flex min-h-44 cursor-default flex-col overflow-hidden rounded-lg border bg-card select-none",
+        selected || multi ? "border-primary/50 ring-2 ring-primary/20" : "border-border hover:border-foreground/20",
+      )}
+    >
+      <div className="flex h-28 items-center justify-center overflow-hidden bg-muted/50">
+        {thumbnail ? (
+          <img src={thumbnail} alt="" className="size-full object-cover" draggable={false} />
+        ) : item.itemType === "note" ? (
+          <p className="line-clamp-4 px-4 text-[12px] leading-5 text-muted-foreground">{secondary}</p>
+        ) : item.itemType === "link" ? (
+          <Link2 className="size-8 text-muted-foreground/50" />
+        ) : (
+          <TypeIcon item={item} className="size-8 text-muted-foreground/50" />
+        )}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-1 p-2.5">
+        <div className="flex items-center gap-1.5">
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{item.title || "无标题"}</span>
+          {item.isFavorite ? <Star className="size-3 fill-primary text-primary" /> : null}
+        </div>
+        <span className="truncate font-mono text-[10.5px] text-muted-foreground">{secondary}</span>
+        {item.tags.length > 0 ? (
+          <div className="mt-auto flex gap-1 overflow-hidden pt-1">
+            {item.tags.slice(0, 2).map((tag) => (
+              <span key={tag.id} className={cn("truncate rounded px-1 py-px text-[10px]", tagBadgeClass(tag.color))}>{tag.name}</span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 const SORTS: { key: SortKey; label: string; icon: typeof ArrowUpDown }[] = [
   { key: "updated", label: "按修改时间", icon: ArrowUpDown },
   { key: "created", label: "按创建时间", icon: Calendar },
@@ -170,6 +247,7 @@ const SORTS: { key: SortKey; label: string; icon: typeof ArrowUpDown }[] = [
 ];
 
 export function ItemList() {
+  const { listLayout, setListLayout } = useUi();
   const {
     ready,
     items,
@@ -200,6 +278,7 @@ export function ItemList() {
   const title = viewTitle(view, collections, tags);
   const isTrash = view.kind === "trash";
   const batch = multiIds;
+  const batchSet = useMemo(() => new Set(batch), [batch]);
 
   const targetCollection = view.kind === "collection" ? view.id : null;
 
@@ -253,6 +332,7 @@ export function ItemList() {
                         toast.success(`已更新 ${batch.length} 项的标签`);
                       }}
                     >
+                      <span className={cn("size-2 rounded-full", tagDotClass(t.color))} />
                       {t.name}
                     </DropdownMenuItem>
                   ))}
@@ -334,6 +414,14 @@ export function ItemList() {
             <h1 className="text-[15px] font-medium tracking-tight">{title}</h1>
             <span className="font-mono text-[11px] text-muted-foreground">{items.length}</span>
             <div className="flex-1" />
+            <div className="flex rounded-md bg-muted p-0.5" aria-label="条目布局">
+              <Button variant={listLayout === "list" ? "secondary" : "ghost"} size="icon-xs" onClick={() => setListLayout("list")} aria-label="列表视图">
+                <List className="size-3.5" />
+              </Button>
+              <Button variant={listLayout === "grid" ? "secondary" : "ghost"} size="icon-xs" onClick={() => setListLayout("grid")} aria-label="网格视图">
+                <LayoutGrid className="size-3.5" />
+              </Button>
+            </div>
             {!isTrash && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -430,13 +518,21 @@ export function ItemList() {
         ) : items.length === 0 && !isTrash && !query ? (
           <EmptyState view={view} />
         ) : (
-          <div className="flex flex-col gap-px p-2">
-            {items.map((item) => (
+          <div className={cn(listLayout === "grid" ? "grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2 p-3" : "flex flex-col gap-px p-2")}>
+            {items.map((item) => listLayout === "grid" ? (
+              <ItemCard
+                key={item.id}
+                item={item}
+                selected={selectedId === item.id}
+                multi={batchSet.has(item.id)}
+                onActivate={handleActivate(item.id)}
+              />
+            ) : (
               <ItemRow
                 key={item.id}
                 item={item}
                 selected={selectedId === item.id}
-                multi={batch.includes(item.id)}
+                multi={batchSet.has(item.id)}
                 onActivate={handleActivate(item.id)}
               />
             ))}

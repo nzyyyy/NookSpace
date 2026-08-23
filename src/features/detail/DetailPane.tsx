@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   ExternalLink,
   File as FileIcon,
@@ -35,6 +35,16 @@ import {
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useTitlebarDrag } from "@/hooks/useTitlebarDrag";
 import { toast } from "sonner";
+import {
+  createSerialNoteSaver,
+  readNoteDraft,
+  settleNoteDraft,
+  writeNoteDraft,
+  type NoteDraft,
+} from "@/lib/note-draft";
+import { tagBadgeClass, tagDotClass } from "@/lib/tag-colors";
+
+const MarkdownPreview = lazy(() => import("./MarkdownPreview"));
 
 function EmptyDetail() {
   return (
@@ -85,7 +95,7 @@ function TagsEditor({ item }: { item: Item }) {
       {item.tags.map((t) => (
         <span
           key={t.id}
-          className="group flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[11.5px] text-foreground/80"
+          className={cn("group flex items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px]", tagBadgeClass(t.color))}
         >
           {t.name}
           <button
@@ -124,6 +134,7 @@ function TagsEditor({ item }: { item: Item }) {
                   setInput("");
                 }}
               >
+                <span className={cn("size-2 rounded-full", tagDotClass(t.color))} />
                 {t.name}
               </button>
             ))}
@@ -270,52 +281,93 @@ function FilePreview({ item }: { item: Item }) {
 }
 
 export function DetailPane() {
-  const { detail, detailLoading, toggleFavorite } = useLibrary();
+  const { detail, detailLoading, noteMode, setNoteMode, toggleFavorite } = useLibrary();
   const headerRef = useRef<HTMLDivElement | null>(null);
   useTitlebarDrag(headerRef);
   const item = detail?.item;
 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
-  const [saveState, setSaveState] = useState<"idle" | "dirty" | "saving" | "saved">("idle");
+  const [saveState, setSaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
   const loadedId = useRef<string | null>(null);
-  const firstDraft = useRef(true);
+  const baseUpdatedAt = useRef("");
+  const latestDraft = useRef<NoteDraft | null>(null);
+  const saver = useRef<ReturnType<typeof createSerialNoteSaver> | null>(null);
+
+  if (!saver.current) {
+    saver.current = createSerialNoteSaver({
+      save: async (draft) => {
+        if (loadedId.current === draft.id) setSaveState("saving");
+        return (await useLibrary.getState().saveNote(draft.id, draft.title, draft.content))?.updatedAt ?? null;
+      },
+      onSaved: (draft, updatedAt) => {
+        settleNoteDraft(localStorage, draft, updatedAt);
+        if (loadedId.current !== draft.id) return;
+        baseUpdatedAt.current = updatedAt;
+        if (latestDraft.current?.title === draft.title && latestDraft.current.content === draft.content) {
+          latestDraft.current = null;
+        }
+        setSaveState(latestDraft.current ? "dirty" : "saved");
+      },
+      onFailed: (draft) => {
+        if (loadedId.current === draft.id) setSaveState("error");
+      },
+    });
+  }
 
   useEffect(() => {
-    if (item && item.id !== loadedId.current) {
-      loadedId.current = item.id;
-      setTitle(item.title);
-      setContent(item.content);
-      setSaveState("idle");
-      firstDraft.current = true;
+    if (!item || item.itemType !== "note" || item.id === loadedId.current) return;
+    const databaseDraft: NoteDraft = {
+      id: item.id,
+      title: item.title,
+      content: item.content,
+      baseUpdatedAt: item.updatedAt,
+    };
+    const recovered = readNoteDraft(localStorage, databaseDraft);
+    const draft = recovered ?? databaseDraft;
+    loadedId.current = item.id;
+    baseUpdatedAt.current = item.updatedAt;
+    latestDraft.current = recovered;
+    setTitle(draft.title);
+    setContent(draft.content);
+    setSaveState(recovered ? "dirty" : "idle");
+    if (recovered) {
+      toast.info("已恢复未保存的笔记内容");
+      saver.current?.schedule(recovered);
     }
   }, [item]);
 
+  useEffect(() => () => void saver.current?.flush(), [item?.id]);
   useEffect(() => {
+    if (noteMode === "read") void saver.current?.flush();
+  }, [noteMode]);
+
+  const updateDraft = (nextTitle: string, nextContent: string) => {
     if (!item || item.itemType !== "note") return;
-    if (firstDraft.current) {
-      firstDraft.current = false;
-      return;
-    }
-    if (title === item.title && content === item.content) {
-      setSaveState("idle");
-      return;
-    }
+    const draft = {
+      id: item.id,
+      title: nextTitle,
+      content: nextContent,
+      baseUpdatedAt: baseUpdatedAt.current || item.updatedAt,
+    };
+    setTitle(nextTitle);
+    setContent(nextContent);
+    latestDraft.current = draft;
+    writeNoteDraft(localStorage, draft);
     setSaveState("dirty");
-    const t = setTimeout(async () => {
-      setSaveState("saving");
-      const saved = await ipc.updateNote(item.id, title, content).catch(() => null);
-      if (saved) {
-        const state = useLibrary.getState();
-        state.applyDetail({
-          item: saved,
-          attachments: state.detail?.attachments ?? [],
-        });
-        setSaveState("saved");
-      }
-    }, 400);
-    return () => clearTimeout(t);
-  }, [title, content, item]);
+    saver.current?.schedule(draft);
+  };
+
+  const changeNoteMode = (mode: "read" | "edit") => {
+    setNoteMode(mode);
+    if (mode === "read") void saver.current?.flush();
+  };
+
+  const retrySave = () => {
+    if (!latestDraft.current) return;
+    saver.current?.schedule(latestDraft.current);
+    void saver.current?.flush();
+  };
 
   const isTrashed = item ? item.deletedAt !== null : false;
 
@@ -327,15 +379,34 @@ export function DetailPane() {
           {item ? TYPE_LABEL[item.itemType] : "详情"}
         </h1>
         <div className="flex-1" />
+        {item?.itemType === "note" && (
+          <div className="flex items-center rounded-md bg-muted p-0.5" aria-label="笔记模式">
+            <Button variant={noteMode === "read" ? "default" : "ghost"} size="xs" aria-pressed={noteMode === "read"} onClick={() => changeNoteMode("read")}>
+              阅读
+            </Button>
+            <Button variant={noteMode === "edit" ? "default" : "ghost"} size="xs" aria-pressed={noteMode === "edit"} onClick={() => changeNoteMode("edit")} disabled={isTrashed}>
+              编辑
+            </Button>
+          </div>
+        )}
         {item && saveState !== "idle" && item.itemType === "note" && (
-          <span
+          <button
+            type="button"
+            disabled={saveState !== "error"}
+            onClick={retrySave}
             className={cn(
               "font-mono text-[10.5px]",
-              saveState === "dirty" ? "text-muted-foreground" : "text-muted-foreground/60",
+              saveState === "error" ? "text-destructive" : "text-muted-foreground/60",
             )}
           >
-            {saveState === "saving" ? "保存中…" : saveState === "saved" ? "已保存" : "未保存"}
-          </span>
+            {saveState === "saving"
+              ? "保存中…"
+              : saveState === "saved"
+                ? "已保存"
+                : saveState === "error"
+                  ? "保存失败，点击重试"
+                  : "未保存"}
+          </button>
         )}
         {item && (
           <Button
@@ -403,22 +474,35 @@ export function DetailPane() {
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex min-h-full flex-col px-6 py-5">
           {item.itemType === "note" ? (
-            <>
-              <Input
-                value={title}
-                disabled={isTrashed}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="无标题"
-                className="h-auto -mx-1 rounded-md border-none px-1 text-[20px] font-semibold tracking-tight shadow-none focus-visible:ring-1 focus-visible:ring-ring/40"
-              />
-              <Textarea
-                value={content}
-                disabled={isTrashed}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="写点什么…（支持 Markdown 语法，渲染后续版本提供）"
-                className="mt-2 min-h-[320px] -mx-1 flex-1 resize-none rounded-md border-none p-1 text-[14px] leading-relaxed shadow-none focus-visible:ring-1 focus-visible:ring-ring/30"
-              />
-            </>
+            noteMode === "edit" && !isTrashed ? (
+              <>
+                <Input
+                  value={title}
+                  onChange={(e) => updateDraft(e.target.value, content)}
+                  placeholder="无标题"
+                  className="h-auto -mx-1 rounded-md border-none px-1 text-[20px] font-semibold tracking-tight shadow-none focus-visible:ring-1 focus-visible:ring-ring/40"
+                />
+                <Textarea
+                  autoFocus
+                  value={content}
+                  onChange={(e) => updateDraft(title, e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") changeNoteMode("read");
+                  }}
+                  placeholder="写点什么…（支持 Markdown）"
+                  className="mt-2 min-h-[320px] -mx-1 flex-1 resize-none rounded-md border-none p-1 text-[14px] leading-relaxed shadow-none focus-visible:ring-1 focus-visible:ring-ring/30"
+                />
+              </>
+            ) : (
+              <>
+                <h2 className="text-[24px] font-semibold tracking-tight">{title || "无标题"}</h2>
+                <div className="mt-4">
+                  <Suspense fallback={<p className="text-[13px] text-muted-foreground">正在排版…</p>}>
+                    <MarkdownPreview content={content} />
+                  </Suspense>
+                </div>
+              </>
+            )
           ) : item.itemType === "file" ? (
             <>
               <div className="flex items-center gap-2">
