@@ -604,6 +604,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn item_export_writes_notes_and_copies_files_safely() {
+        let (temp, lib) = disk_library();
+        let output = temp.0.join("output");
+        fs::create_dir(&output).unwrap();
+
+        let note = lib.create_note("说明", "# 正文\n", &[]).unwrap();
+        let note_path = output.join("说明.md");
+        assert_eq!(
+            lib.export_item(&note.id, &note_path).unwrap(),
+            note_path.to_string_lossy()
+        );
+        assert_eq!(fs::read(&note_path).unwrap(), "# 正文\n".as_bytes());
+
+        let source = temp.0.join("source.bin");
+        fs::write(&source, b"verified file").unwrap();
+        let file = lib
+            .import_files(&[source.to_string_lossy().to_string()], None)
+            .unwrap()
+            .imported
+            .remove(0)
+            .item;
+        let file_path = output.join("source.bin");
+        lib.export_item(&file.id, &file_path).unwrap();
+        assert_eq!(fs::read(file_path).unwrap(), b"verified file");
+
+        let link = lib.create_link("https://example.com", "示例", &[]).unwrap();
+        assert!(lib
+            .export_item(&link.id, &output.join("example.url"))
+            .is_err());
+        assert!(lib
+            .export_item(&note.id, &lib.root.join("inside.md"))
+            .is_err());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let target = output.join("target.md");
+            let alias = output.join("alias.md");
+            fs::write(&target, b"keep").unwrap();
+            symlink(&target, &alias).unwrap();
+            assert!(lib.export_item(&note.id, &alias).is_err());
+            assert_eq!(fs::read(target).unwrap(), b"keep");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn transfer_rejects_symlinks_and_cleans_partial_output() {

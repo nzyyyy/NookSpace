@@ -151,6 +151,19 @@ pub async fn get_item(state: State<'_, Library>, id: String) -> Result<ItemDetai
 }
 
 #[tauri::command]
+pub async fn export_item(
+    state: State<'_, Library>,
+    id: String,
+    destination: String,
+) -> Result<String, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| {
+        l.export_item(&id, &PathBuf::from(destination))
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn create_note(
     state: State<'_, Library>,
     title: String,

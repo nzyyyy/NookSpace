@@ -189,6 +189,9 @@ export const ipc = {
 
   getItem: (id: string) => invoke<ItemDetail>("get_item", { id }),
 
+  exportItem: (id: string, destination: string) =>
+    invoke<string>("export_item", { id, destination }),
+
   createNote: (title: string, content: string, collectionIds: string[]) =>
     invoke<Item>("create_note", { title, content, collectionIds }),
 

@@ -143,6 +143,29 @@ where
 }
 
 impl Library {
+    pub fn export_item(&self, id: &str, destination: &Path) -> Result<String, String> {
+        let parent = destination.parent().ok_or("无效导出路径")?;
+        ensure_outside(&self.root, parent)?;
+        if fs::symlink_metadata(destination).is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err("导出目标不能是符号链接".into());
+        }
+
+        let _files = self.files_lock.lock().unwrap();
+        let item = self.get_item(id)?.item;
+        match item.item_type.as_str() {
+            "note" => fs::write(destination, item.content.as_bytes())
+                .map_err(|error| error.to_string())?,
+            "file" if !item.stored_path.is_empty() => {
+                let source = self.safe_stored_path(&item.stored_path)?;
+                copy_file_verified(&source, destination)?;
+            }
+            "file" => return Err("该条目没有可导出的文件".into()),
+            _ => return Err("该条目不支持导出".into()),
+        }
+        Ok(destination.to_string_lossy().to_string())
+    }
+
     fn snapshot_database(&self, destination: &Path) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
         conn.backup(MAIN_DB, destination, None)

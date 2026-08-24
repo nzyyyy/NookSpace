@@ -44,6 +44,7 @@ pub fn run() {
             commands::use_existing_library,
             commands::restart_app,
             commands::get_item,
+            commands::export_item,
             commands::create_note,
             commands::update_note,
             commands::create_link,

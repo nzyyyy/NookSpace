@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  Download,
   ExternalLink,
   File as FileIcon,
   FolderPlus,
@@ -12,6 +13,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   convertFileSrc,
   ipc,
@@ -724,6 +726,31 @@ export function DetailPane() {
     void saver.current?.flush();
   };
 
+  const exportItem = async () => {
+    if (!item || item.itemType === "link") return;
+    try {
+      const waits: Promise<void>[] = [];
+      window.dispatchEvent(new CustomEvent("nookspace:flush-edits", { detail: waits }));
+      await Promise.all(waits);
+
+      const noteTitle = title
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
+        .replace(/[. ]+$/g, "")
+        .trim();
+      const destination = await saveDialog({
+        title: "导出文件",
+        defaultPath: item.itemType === "note" ? `${noteTitle || "无标题"}.md` : item.title,
+        filters: item.itemType === "note" ? [{ name: "Markdown", extensions: ["md"] }] : undefined,
+      });
+      if (!destination) return;
+
+      const exported = await ipc.exportItem(item.id, destination);
+      toast.success(`已导出：${exported}`);
+    } catch (error) {
+      toast.error(`导出失败：${String(error)}`);
+    }
+  };
+
   const isTrashed = item ? item.deletedAt !== null : false;
 
   return (
@@ -784,7 +811,7 @@ export function DetailPane() {
         {item && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-sm">
+              <Button variant="ghost" size="icon-sm" aria-label="更多操作">
                 <MoreHorizontal className="size-4 text-muted-foreground" />
               </Button>
           </DropdownMenuTrigger>
@@ -806,6 +833,14 @@ export function DetailPane() {
               <DropdownMenuItem onSelect={() => void openUrl(item.url)}>
                 <ExternalLink className="size-3.5" /> 在浏览器中打开
               </DropdownMenuItem>
+            )}
+            {item.itemType !== "link" && (
+              <>
+                <DropdownMenuItem onSelect={() => void exportItem()}>
+                  <Download className="size-3.5" /> 导出…
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
             )}
             <DropdownMenuItem
               variant="destructive"

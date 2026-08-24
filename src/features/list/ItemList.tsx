@@ -471,7 +471,7 @@ export function ItemList() {
                     <Plus className="size-3.5" /> 新建
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
+                <DropdownMenuContent align="start" className="w-44">
                   <DropdownMenuItem
                     onSelect={() => {
                       void createNote().then((item) => item && toast.success("已新建笔记"));
