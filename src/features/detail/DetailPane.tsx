@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Download,
@@ -250,6 +250,32 @@ function Attachments({ item }: { item: Item }) {
 
 type TextFileSaveState = "idle" | "dirty" | "saving" | "saved" | "error" | "conflict";
 
+function useAutosizeTextarea(value: string, active: boolean) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useLayoutEffect(() => {
+    const textarea = ref.current;
+    if (!textarea || !active) return;
+
+    const resize = () => {
+      textarea.style.height = "auto";
+      textarea.style.height = `${textarea.scrollHeight}px`;
+    };
+    let width = textarea.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (textarea.clientWidth === width) return;
+      width = textarea.clientWidth;
+      resize();
+    });
+
+    resize();
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [active, value]);
+
+  return ref;
+}
+
 function TextFileEditor({
   item,
   headerActions,
@@ -262,6 +288,7 @@ function TextFileEditor({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<TextFileSaveState>("idle");
+  const textareaRef = useAutosizeTextarea(content, mode === "edit" && !item.deletedAt);
   const version = useRef("");
   const encoding = useRef<TextFileEncoding>("utf8");
   const lineEnding = useRef<TextFileLineEnding>("lf");
@@ -528,7 +555,7 @@ function TextFileEditor({
         headerActions,
       )}
 
-      <div className="flex min-h-[360px] flex-1 flex-col gap-3">
+      <div className="flex min-h-[360px] min-w-0 flex-1 flex-col gap-3">
         {saveState === "conflict" && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2" role="alert">
             <p className="min-w-0 flex-1 text-[12px] text-foreground/80">
@@ -541,13 +568,14 @@ function TextFileEditor({
 
         {mode === "edit" && !item.deletedAt ? (
           <Textarea
+            ref={textareaRef}
             autoFocus
             value={content}
             onChange={(event) => updateContent(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Escape") changeMode("read");
             }}
-            className="min-h-[360px] flex-1 resize-none rounded-md border-border/60 p-3 font-mono text-[13px] leading-6 shadow-none focus-visible:ring-1 focus-visible:ring-ring/30"
+            className="min-h-[360px] -mx-1 grow shrink-0 basis-auto resize-none overflow-hidden rounded-none border-none p-1 font-mono text-[13px] leading-6 shadow-none focus-visible:border-transparent focus-visible:bg-muted/20 focus-visible:ring-0"
             aria-label={`编辑 ${item.title}`}
           />
         ) : isMarkdown ? (
@@ -555,7 +583,7 @@ function TextFileEditor({
             <MarkdownPreview content={content} />
           </Suspense>
         ) : (
-          <pre className="whitespace-pre-wrap break-words font-mono text-[13px] leading-6 text-foreground/90">{content}</pre>
+          <pre className="w-full min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[13px] leading-6 text-foreground/90">{content}</pre>
         )}
       </div>
     </>
@@ -639,6 +667,10 @@ export function DetailPane() {
   const [content, setContent] = useState("");
   const [saveState, setSaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
   const [fileHeaderActions, setFileHeaderActions] = useState<HTMLDivElement | null>(null);
+  const noteTextareaRef = useAutosizeTextarea(
+    content,
+    noteMode === "edit" && item?.itemType === "note" && item.deletedAt === null,
+  );
   const loadedId = useRef<string | null>(null);
   const baseUpdatedAt = useRef("");
   const latestDraft = useRef<NoteDraft | null>(null);
@@ -867,8 +899,11 @@ export function DetailPane() {
         )
       ) : (
       <div className="flex min-h-0 flex-1 flex-col">
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="flex min-h-full flex-col px-6 py-5">
+        <ScrollArea
+          type="scroll"
+          className="min-h-0 flex-1 [&_[data-slot=scroll-area-scrollbar]]:w-1.5 [&_[data-slot=scroll-area-scrollbar]]:py-3 [&_[data-slot=scroll-area-thumb]]:bg-muted-foreground/45 [&_[data-slot=scroll-area-viewport]>div]:!block"
+        >
+          <div className="flex min-h-full w-full min-w-0 max-w-full flex-col px-6 py-5">
           {item.itemType === "note" ? (
             noteMode === "edit" && !isTrashed ? (
               <>
@@ -879,6 +914,7 @@ export function DetailPane() {
                   className="h-auto -mx-1 rounded-md border-none px-1 text-[20px] font-semibold tracking-tight shadow-none focus-visible:ring-1 focus-visible:ring-ring/40"
                 />
                 <Textarea
+                  ref={noteTextareaRef}
                   autoFocus
                   value={content}
                   onChange={(e) => updateDraft(title, e.target.value)}
@@ -886,7 +922,7 @@ export function DetailPane() {
                     if (e.key === "Escape") changeNoteMode("read");
                   }}
                   placeholder="写点什么…（支持 Markdown）"
-                  className="mt-2 min-h-[320px] -mx-1 flex-1 resize-none rounded-md border-none p-1 text-[14px] leading-relaxed shadow-none focus-visible:ring-1 focus-visible:ring-ring/30"
+                  className="mt-2 min-h-[320px] -mx-1 grow shrink-0 basis-auto resize-none overflow-hidden rounded-none border-none p-1 text-[14px] leading-relaxed shadow-none focus-visible:border-transparent focus-visible:bg-muted/20 focus-visible:ring-0"
                 />
               </>
             ) : (
@@ -912,7 +948,7 @@ export function DetailPane() {
                 <span>创建于 {formatFullDate(item.createdAt)}</span>
                 <span>修改于 {formatFullDate(item.updatedAt)}</span>
               </div>
-              <div className="mt-4 flex min-h-0 flex-1 flex-col">
+              <div className="mt-4 flex min-h-0 min-w-0 flex-1 flex-col">
                 <FilePreview item={item} headerActions={fileHeaderActions} />
               </div>
             </>

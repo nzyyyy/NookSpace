@@ -9,7 +9,7 @@ export default function MarkdownPreview({ content }: { content: string }) {
     return <p className="text-[13px] text-muted-foreground">这篇笔记还没有内容</p>;
   }
   return (
-    <article className="markdown-body">
+    <article className="markdown-body w-full min-w-0 max-w-full">
       <ReactMarkdown
         remarkPlugins={MARKDOWN_PLUGINS}
         skipHtml
@@ -29,6 +29,11 @@ export default function MarkdownPreview({ content }: { content: string }) {
             <span className="inline-flex rounded bg-muted px-1.5 py-0.5 text-[12px] text-muted-foreground">
               远程图片未加载{alt ? `：${alt}` : ""}
             </span>
+          ),
+          table: ({ children }) => (
+            <div className="w-full max-w-full overflow-x-auto">
+              <table>{children}</table>
+            </div>
           ),
         }}
       >
