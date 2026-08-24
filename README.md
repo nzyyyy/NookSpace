@@ -21,7 +21,7 @@
 pnpm install
 pnpm tauri dev        # 开发模式（热更新）
 pnpm build            # 前端类型检查 + 构建
-pnpm tauri build      # 打包 .app
+pnpm run package      # 打包唯一的 .app 并复制到 dist/
 ```
 
 Rust 侧（`src-tauri/`）：

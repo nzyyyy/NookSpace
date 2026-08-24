@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "package": "tauri build && rm -rf dist/NookSpace.app && cp -R src-tauri/target/release/bundle/macos/NookSpace.app dist/",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
