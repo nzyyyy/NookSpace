@@ -100,7 +100,7 @@ pub(crate) fn sha256_of(path: &Path) -> Result<String, String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn mime_of(name: &str) -> String {
+pub(crate) fn mime_of(name: &str) -> String {
     let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
     let mime = match ext.as_str() {
         "png" => "image/png",
@@ -114,6 +114,7 @@ fn mime_of(name: &str) -> String {
         "txt" | "log" => "text/plain",
         "html" | "htm" => "text/html",
         "json" => "application/json",
+        "yaml" | "yml" => "text/yaml",
         "csv" => "text/csv",
         "rtf" => "application/rtf",
         "doc" => "application/msword",
@@ -208,10 +209,17 @@ fn import_one(
         .map(|c| vec![c.to_string()])
         .unwrap_or_default();
     let mime = mime_of(&file_name);
+    let content = if crate::library::native::is_text_file(&mime, &file_name)
+        && size <= crate::library::native::MAX_TEXT_FILE_BYTES as i64
+    {
+        std::fs::read_to_string(&dest).unwrap_or_default()
+    } else {
+        String::new()
+    };
     let id = lib.insert_item(
         "file",
         &file_name,
-        "",
+        &content,
         "",
         &rel,
         size,

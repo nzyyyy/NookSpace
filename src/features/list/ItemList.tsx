@@ -28,7 +28,7 @@ import { convertFileSrc, ipc, type Collection, type ItemSummary, type SavedView 
 import { formatRelativeDate, formatSize } from "@/lib/format";
 import { collectionPath } from "@/lib/collections";
 import { tagBadgeClass, tagDotClass } from "@/lib/tag-colors";
-import { isMediaFile } from "@/lib/file-types";
+import { canonicalFormat, displayStem, fileExtension, isMediaFile } from "@/lib/file-types";
 import { useLibrary, type SortKey, type View } from "@/stores/library";
 import { useUi, type ListLayout } from "@/stores/ui";
 import { useTitlebarDrag } from "@/hooks/useTitlebarDrag";
@@ -84,24 +84,24 @@ function viewTitle(
 }
 
 function TypeIcon({ item, className }: { item: ItemSummary; className?: string }) {
-  if (item.itemType === "note") return <FileText className={className} />;
   if (item.itemType === "link") return <Link2 className={className} />;
+  if (canonicalFormat(fileExtension(item.storedPath || item.title)) === "md") {
+    return <FileText className={className} />;
+  }
   if (item.mime.startsWith("image/")) return <ImageIcon className={className} />;
   if (item.mime.startsWith("video/")) return <Clapperboard className={className} />;
   if (item.mime.startsWith("audio/")) return <Music className={className} />;
   return <FileIcon className={className} />;
 }
 
-function extOf(name: string): string {
-  const i = name.lastIndexOf(".");
-  return i > 0 ? name.slice(i + 1).toUpperCase() : "";
+function extOf(item: ItemSummary): string {
+  return fileExtension(item.storedPath || item.title).toUpperCase();
 }
 
 function metaLine(item: ItemSummary): string {
   const rel = formatRelativeDate(item.updatedAt);
-  if (item.itemType === "note") return `笔记 · ${rel}`;
   if (item.itemType === "file") {
-    const ext = extOf(item.title);
+    const ext = extOf(item);
     const size = item.size > 0 ? ` · ${formatSize(item.size)}` : "";
     return `${ext || "文件"}${size} · ${rel}`;
   }
@@ -153,7 +153,7 @@ function ItemRow({
       <div className="flex items-center gap-2">
         <TypeIcon item={item} className="size-4 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium">
-          <Highlight text={item.title || "无标题"} terms={terms} />
+          <Highlight text={displayStem(item.title, item.storedPath) || "无标题"} terms={terms} />
         </span>
         <button
           tabIndex={-1}
@@ -233,8 +233,9 @@ function ItemCard({
 
   let secondary = "";
   if (snippet) secondary = snippet;
-  else if (item.itemType === "note") secondary = item.contentPreview.replace(/\s+/g, " ").trim() || "空笔记";
-  else if (item.itemType === "link") {
+  else if (item.itemType === "file" && item.contentPreview.trim()) {
+    secondary = item.contentPreview.replace(/\s+/g, " ").trim();
+  } else if (item.itemType === "link") {
     try { secondary = new URL(item.url).hostname; } catch { secondary = item.url; }
   } else secondary = metaLine(item);
 
@@ -253,7 +254,7 @@ function ItemCard({
       <div className="flex h-28 items-center justify-center overflow-hidden bg-muted/50">
         {thumbnail ? (
           <img src={thumbnail} alt="" className="size-full object-cover" draggable={false} />
-        ) : item.itemType === "note" ? (
+        ) : item.itemType === "file" && item.contentPreview.trim() ? (
           <p className="line-clamp-4 px-4 text-[12px] leading-5 text-muted-foreground">{secondary}</p>
         ) : item.itemType === "link" ? (
           <Link2 className="size-8 text-muted-foreground/50" />
@@ -263,7 +264,7 @@ function ItemCard({
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-1 p-2.5">
         <div className="flex items-center gap-1.5">
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium"><Highlight text={item.title || "无标题"} terms={terms} /></span>
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium"><Highlight text={displayStem(item.title, item.storedPath) || "无标题"} terms={terms} /></span>
           {item.isFavorite ? <Star className="size-3 fill-primary text-primary" /> : null}
         </div>
         <span className="line-clamp-2 font-mono text-[10.5px] text-muted-foreground"><Highlight text={secondary} terms={terms} /></span>

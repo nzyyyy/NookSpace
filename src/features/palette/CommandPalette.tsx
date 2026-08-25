@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { collectionPath } from "@/lib/collections";
+import { canonicalFormat, displayStem, fileExtension } from "@/lib/file-types";
 import { tagDotClass } from "@/lib/tag-colors";
 import { cn } from "@/lib/utils";
 
@@ -123,16 +124,16 @@ export function CommandPalette() {
               <CommandGroup heading="条目">
                 {results.map((item) => (
                   <CommandItem key={item.id} value={item.title} onSelect={() => openItem(item.id)}>
-                    {item.itemType === "note" ? (
-                      <FileText className="size-3.5 text-muted-foreground" />
-                    ) : item.itemType === "link" ? (
+                    {item.itemType === "link" ? (
                       <Link2 className="size-3.5 text-muted-foreground" />
+                    ) : canonicalFormat(fileExtension(item.storedPath || item.title)) === "md" ? (
+                      <FileText className="size-3.5 text-muted-foreground" />
                     ) : (
                       <Folder className="size-3.5 text-muted-foreground" />
                     )}
-                    <span className="min-w-0 flex-1 truncate">{item.title || "无标题"}</span>
+                    <span className="min-w-0 flex-1 truncate">{displayStem(item.title, item.storedPath) || "无标题"}</span>
                     <span className="font-mono text-[10.5px] text-muted-foreground">
-                      {item.itemType === "note" ? "笔记" : item.itemType === "link" ? "链接" : "文件"}
+                      {item.itemType === "link" ? "链接" : fileExtension(item.storedPath || item.title).toUpperCase() || "文件"}
                     </span>
                   </CommandItem>
                 ))}

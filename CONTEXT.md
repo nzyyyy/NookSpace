@@ -6,30 +6,39 @@ This file is a glossary only — no implementation details.
 ## Core
 
 - **Library (资料库)** — the single container of everything the user keeps in
-  NookSpace: Notes, Files, Links and their organization. Conceptually the
+  NookSpace: Files, Links and their organization. Conceptually the
   user's whole workspace; physically an app-managed directory plus an index.
   The user never edits the Library outside the app.
 
 - **Item (条目)** — the single unified record. An Item has exactly one type:
-  Note, File, or Link. All organization, search, favorites, recents and trash
+  File or Link. All organization, search, favorites, recents and trash
   operate on Items uniformly.
 
 ## Item types
 
-- **Note (笔记)** — an Item whose substance is Markdown text.
-
 - **File (文件)** — an Item that wraps a stored file (a copy inside the
-  Library). Distinct from:
+  Library). Newly created text and imported files are the same kind of Item.
+  Distinct from:
   - **Source file (源文件)** — the original file outside the Library that was
     imported; it is never modified or deleted by the app.
   - **Stored file (库内文件)** — the copy managed by the app inside the
     Library directory.
+  _Avoid_: Note as an Item type.
+
+- **Format (格式)** — the stored file's extension. Switchable formats are
+  `md`, `txt`, `json`, `yaml`, and `csv`. Switching Format changes the
+  extension, not the bytes.
 
 - **Link (链接)** — an Item wrapping a URL and a title.
 
-- **Attachment (附件)** — a relationship in which one Item (typically a Note)
-  references another Item (typically a File). An Attachment is not an Item
+- **Attachment (附件)** — a relationship in which one Item (typically a
+  text-format File) references another File. An Attachment is not an Item
   type.
+
+## Actions
+
+- **Note (笔记)** — the user action that creates a File whose Format is `md`.
+  _Avoid_: treating Note as a separate Item type.
 
 ## Organization
 

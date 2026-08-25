@@ -3,7 +3,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useLibrary } from "@/stores/library";
 import { useUi } from "@/stores/ui";
 import { toast } from "sonner";
-import { isMediaFile } from "@/lib/file-types";
+import { isMediaFile, isSwitchableText } from "@/lib/file-types";
 
 /**
  * Global keyboard shortcuts (Q20 table). Field focus and the palette take
@@ -32,7 +32,9 @@ export function useShortcuts() {
       // Cmd+E — toggle the selected note between reading and editing.
       if (mod && e.key.toLowerCase() === "e") {
         const lib = useLibrary.getState();
-        if (lib.detail?.item.itemType === "note" && !lib.detail.item.deletedAt) {
+        if (lib.detail?.item.itemType === "file"
+          && isSwitchableText(lib.detail.item.storedPath || lib.detail.item.title)
+          && !lib.detail.item.deletedAt) {
           e.preventDefault();
           lib.setNoteMode(lib.noteMode === "read" ? "edit" : "read");
         }

@@ -6,7 +6,7 @@ const MARKDOWN_PLUGINS = [remarkGfm];
 
 export default function MarkdownPreview({ content }: { content: string }) {
   if (!content.trim()) {
-    return <p className="text-[13px] text-muted-foreground">这篇笔记还没有内容</p>;
+    return <p className="text-[13px] text-muted-foreground">还没有内容</p>;
   }
   return (
     <article className="markdown-body w-full min-w-0 max-w-full">

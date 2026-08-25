@@ -1,5 +1,6 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::path::Path;
 use std::process::Command;
 
 use rusqlite::params;
@@ -24,14 +25,83 @@ pub(super) fn is_media(mime: &str, name: &str) -> bool {
 }
 
 pub(super) fn is_text_file(mime: &str, name: &str) -> bool {
-    const TEXT_EXTENSIONS: &[&str] = &["txt", "md", "markdown", "log", "csv", "json"];
-    let extension = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    const TEXT_EXTENSIONS: &[&str] =
+        &["txt", "md", "markdown", "log", "csv", "json", "yaml", "yml"];
+    let extension = file_extension(name);
     mime.starts_with("text/")
         || mime == "application/json"
+        || mime == "application/yaml"
         || TEXT_EXTENSIONS.contains(&extension.as_str())
 }
 
-fn sha256_bytes(bytes: &[u8]) -> String {
+pub(super) fn file_extension(name: &str) -> String {
+    Path::new(name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(name)
+        .rsplit_once('.')
+        .filter(|(stem, _)| !stem.is_empty())
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+pub(super) fn canonical_format(ext: &str) -> Option<&'static str> {
+    match ext.to_ascii_lowercase().as_str() {
+        "md" | "markdown" => Some("md"),
+        "txt" => Some("txt"),
+        "json" => Some("json"),
+        "yaml" | "yml" => Some("yaml"),
+        "csv" => Some("csv"),
+        _ => None,
+    }
+}
+
+pub(super) fn stored_extension(format: &str) -> Option<&'static str> {
+    match format {
+        "md" => Some("md"),
+        "txt" => Some("txt"),
+        "json" => Some("json"),
+        "yaml" => Some("yaml"),
+        "csv" => Some("csv"),
+        _ => None,
+    }
+}
+
+pub(super) fn is_switchable_text(name: &str) -> bool {
+    canonical_format(&file_extension(name)).is_some()
+}
+
+pub(super) fn sanitize_stem(stem: &str) -> Result<String, String> {
+    let trimmed = stem.trim();
+    if trimmed.is_empty() {
+        return Err("名称不能为空".into());
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err("无效的文件名".into());
+    }
+    if trimmed.contains(['/', '\\', '\0', ':']) {
+        return Err("名称不能包含路径字符".into());
+    }
+    Ok(trimmed.to_string())
+}
+
+pub(super) fn safe_stem(stem: &str) -> String {
+    let replaced: String = stem
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '\0' => '-',
+            ch => ch,
+        })
+        .collect();
+    let trimmed = replaced.trim().trim_end_matches(['.', ' ']);
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        "无标题".into()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub(super) fn sha256_bytes(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
@@ -188,10 +258,10 @@ pub fn write_text_file(
             let tx = conn.transaction().map_err(|error| error.to_string())?;
             let updated = tx
                 .execute(
-                    "UPDATE items SET size = ?1, updated_at = datetime('now'), \
-                     meta = json_set(meta, '$.sha256', ?2) \
-                     WHERE id = ?3 AND type = 'file' AND deleted_at IS NULL",
-                    params![replacement.len() as i64, version, id],
+                    "UPDATE items SET size = ?1, content = ?2, updated_at = datetime('now'), \
+                     meta = json_set(meta, '$.sha256', ?3) \
+                     WHERE id = ?4 AND type = 'file' AND deleted_at IS NULL",
+                    params![replacement.len() as i64, content, version, id],
                 )
                 .map_err(|error| error.to_string())?;
             if updated != 1 {
@@ -304,7 +374,10 @@ pub fn generate_thumbnail(lib: &Library, id: &str) -> Result<Option<String>, Str
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_text, encode_text, is_media, is_text_file, MAX_TEXT_FILE_BYTES, UTF8_BOM};
+    use super::{
+        decode_text, encode_text, is_media, is_switchable_text, is_text_file, MAX_TEXT_FILE_BYTES,
+        UTF8_BOM,
+    };
 
     #[test]
     fn media_files_are_not_previewed() {
@@ -320,7 +393,10 @@ mod tests {
     fn text_files_preserve_utf8_bom_and_first_line_ending() {
         assert!(is_text_file("application/octet-stream", "events.LOG"));
         assert!(is_text_file("application/json", "data.bin"));
+        assert!(is_text_file("text/yaml", "config.yaml"));
         assert!(!is_text_file("application/pdf", "document.pdf"));
+        assert!(is_switchable_text("note.md"));
+        assert!(!is_switchable_text("photo.png"));
 
         let bytes = [UTF8_BOM, b"one\r\ntwo\n"].concat();
         let document = decode_text(&bytes).unwrap();

@@ -68,16 +68,15 @@ mod tests {
         fs::create_dir_all(&app_data).unwrap();
         let mut conn = db::open_db(&root.join("nook.db")).unwrap();
         db::migrate(&mut conn).unwrap();
-        (
-            TestRoot(base),
-            Library {
-                db: Arc::new(Mutex::new(conn)),
-                root,
-                cache,
-                app_data,
-                files_lock: Arc::new(Mutex::new(())),
-            },
-        )
+        let lib = Library {
+            db: Arc::new(Mutex::new(conn)),
+            root,
+            cache,
+            app_data,
+            files_lock: Arc::new(Mutex::new(())),
+        };
+        lib.migrate_notes_to_files().unwrap();
+        (TestRoot(base), lib)
     }
 
     fn write_pdf(path: &Path, text: Option<&str>) {
@@ -117,7 +116,7 @@ mod tests {
 
     #[test]
     fn collection_tree_moves_filters_and_deletes_without_deleting_items() {
-        let lib = library();
+        let (_temp, lib) = disk_library();
         let root = lib.create_collection("Root", None).unwrap();
         let child = lib.create_collection("Child", Some(&root.id)).unwrap();
         let sibling = lib.create_collection("Sibling", None).unwrap();
@@ -194,7 +193,7 @@ mod tests {
                 &[],
             )
             .unwrap();
-        assert!(lib.update_note(&file_id, "changed", "changed").is_err());
+        assert!(lib.rename_file(&file_id, "changed", None).is_err());
     }
 
     #[test]
@@ -251,7 +250,7 @@ mod tests {
 
     #[test]
     fn search_supports_fts_short_terms_filters_and_sync() {
-        let lib = library();
+        let (_temp, lib) = disk_library();
         let work = lib.create_collection("工作", None).unwrap();
         let archive = lib.create_collection("归档", None).unwrap();
         let important = lib.create_tag("重要").unwrap();
@@ -318,7 +317,16 @@ mod tests {
         assert_eq!(search("date:2025-03-04 type:file").entries.len(), 1);
         assert_eq!(search("date:<2025-03-01 type:note").entries.len(), 1);
 
-        lib.update_note(&note.id, "已重命名", "removed").unwrap();
+        lib.rename_file(&note.id, "已重命名", None).unwrap();
+        let document = lib.read_text_file(&note.id).unwrap();
+        lib.write_text_file(
+            &note.id,
+            "removed",
+            &document.version,
+            &document.encoding,
+            &document.line_ending,
+        )
+        .unwrap();
         assert!(
             search("中文资料").entries.is_empty(),
             "FTS update trigger removes old text"
@@ -579,10 +587,10 @@ mod tests {
         assert_eq!(manifest["items"].as_array().unwrap().len(), 3);
         assert_eq!(manifest["savedViews"].as_array().unwrap().len(), 1);
         assert!(export
-            .join(format!("Active/Notes/{}.md", note.id))
+            .join(format!("Active/Files/{}/说明.md", note.id))
             .is_file());
         assert!(export
-            .join(format!("Trash/Notes/{}.md", trashed.id))
+            .join(format!("Trash/Files/{}/回收站笔记.md", trashed.id))
             .is_file());
 
         assert_eq!(
@@ -885,6 +893,115 @@ mod tests {
     }
 
     #[test]
+    fn create_note_writes_markdown_file_and_indexes_content() {
+        let (_temp, lib) = disk_library();
+        let item = lib.create_note("无标题", "hello body", &[]).unwrap();
+        assert_eq!(item.item_type, "file");
+        assert_eq!(item.mime, "text/markdown");
+        assert_eq!(item.title, "无标题");
+        assert!(item.stored_path.ends_with("/无标题.md"));
+        assert_eq!(
+            fs::read_to_string(lib.root.join(&item.stored_path)).unwrap(),
+            "hello body"
+        );
+        assert_eq!(
+            lib.list_items(&ListFilters {
+                query: Some("hello".into()),
+                ..ListFilters::default()
+            })
+            .unwrap()
+            .entries
+            .len(),
+            1
+        );
+        assert_eq!(
+            lib.list_items(&ListFilters {
+                query: Some("type:note".into()),
+                ..ListFilters::default()
+            })
+            .unwrap()
+            .entries[0]
+                .item
+                .id,
+            item.id
+        );
+    }
+
+    #[test]
+    fn migrate_notes_to_files_is_idempotent_and_searchable() {
+        let (_temp, lib) = disk_library();
+        let id = lib
+            .insert_item(
+                "note",
+                "旧笔记",
+                "searchable body",
+                "",
+                "",
+                0,
+                "",
+                "{}",
+                &[],
+            )
+            .unwrap();
+        lib.migrate_notes_to_files().unwrap();
+        lib.migrate_notes_to_files().unwrap();
+        let item = lib.get_item(&id).unwrap().item;
+        assert_eq!(item.item_type, "file");
+        assert_eq!(item.mime, "text/markdown");
+        assert_eq!(
+            fs::read_to_string(lib.root.join(&item.stored_path)).unwrap(),
+            "searchable body"
+        );
+        assert_eq!(
+            lib.list_items(&ListFilters {
+                query: Some("searchable".into()),
+                ..ListFilters::default()
+            })
+            .unwrap()
+            .entries
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn rename_file_changes_stem_and_switchable_format_keeps_bytes() {
+        let (_temp, lib) = disk_library();
+        let item = lib.create_note("草稿", "same-bytes", &[]).unwrap();
+        let original = fs::read(lib.root.join(&item.stored_path)).unwrap();
+        let renamed = lib.rename_file(&item.id, "日报", Some("csv")).unwrap();
+        assert_eq!(renamed.title, "日报");
+        assert_eq!(renamed.mime, "text/csv");
+        assert!(renamed.stored_path.ends_with("/日报.csv"));
+        assert!(!lib.root.join(&item.stored_path).exists());
+        assert_eq!(
+            fs::read(lib.root.join(&renamed.stored_path)).unwrap(),
+            original
+        );
+
+        let stored = lib.root.join("files/doc/report.pdf");
+        fs::create_dir_all(stored.parent().unwrap()).unwrap();
+        fs::write(&stored, b"%PDF").unwrap();
+        let pdf = lib
+            .insert_item(
+                "file",
+                "report.pdf",
+                "",
+                "",
+                "files/doc/report.pdf",
+                4,
+                "application/pdf",
+                "{}",
+                &[],
+            )
+            .unwrap();
+        assert!(lib.rename_file(&pdf, "年度", Some("md")).is_err());
+        let pdf_renamed = lib.rename_file(&pdf, "年度报告", None).unwrap();
+        assert_eq!(pdf_renamed.title, "年度报告");
+        assert!(pdf_renamed.stored_path.ends_with("/年度报告.pdf"));
+    }
+
+    #[test]
     #[ignore = "release-mode acceptance benchmark"]
     fn benchmark_100k_fts_hot_query_p95_under_100ms() {
         let lib = library();
@@ -1043,13 +1160,15 @@ impl Library {
         let db_path = root.join("nook.db");
         let mut conn = db::open_db(&db_path).map_err(map_err)?;
         db::migrate(&mut conn)?;
-        Ok(Self {
+        let lib = Self {
             db: Arc::new(Mutex::new(conn)),
             root,
             cache,
             app_data,
             files_lock: Arc::new(Mutex::new(())),
-        })
+        };
+        lib.migrate_notes_to_files()?;
+        Ok(lib)
     }
 
     pub fn files_dir(&self) -> PathBuf {
@@ -1170,7 +1289,9 @@ impl Library {
                 "SELECT COUNT(*) FROM items WHERE type='file' AND deleted_at IS NULL",
             )?,
             note_count: count(
-                "SELECT COUNT(*) FROM items WHERE type='note' AND deleted_at IS NULL",
+                "SELECT COUNT(*) FROM items WHERE deleted_at IS NULL AND type='file' \
+                 AND (mime = 'text/markdown' OR lower(stored_path) LIKE '%.md' \
+                      OR lower(stored_path) LIKE '%.markdown')",
             )?,
             link_count: count(
                 "SELECT COUNT(*) FROM items WHERE type='link' AND deleted_at IS NULL",
@@ -1230,15 +1351,26 @@ impl Library {
             params.push(Box::new(tid.clone()));
         }
         if !parsed.item_types.is_empty() {
-            let placeholders = vec!["?"; parsed.item_types.len()].join(",");
-            sql.push_str(&format!(" AND i.type IN ({placeholders})"));
-            params.extend(
-                parsed
-                    .item_types
-                    .iter()
-                    .cloned()
-                    .map(|value| Box::new(value) as Box<dyn rusqlite::types::ToSql>),
-            );
+            let wants_file = parsed.item_types.iter().any(|value| value == "file");
+            let wants_note = parsed.item_types.iter().any(|value| value == "note");
+            let wants_link = parsed.item_types.iter().any(|value| value == "link");
+            let mut clauses = Vec::new();
+            if wants_file {
+                clauses.push("i.type = 'file'");
+            } else if wants_note {
+                clauses.push(
+                    "(i.type = 'note' OR (i.type = 'file' AND (i.mime = 'text/markdown' \
+                     OR lower(i.stored_path) LIKE '%.md' OR lower(i.stored_path) LIKE '%.markdown')))",
+                );
+            }
+            if wants_link {
+                clauses.push("i.type = 'link'");
+            }
+            if !clauses.is_empty() {
+                sql.push_str(" AND (");
+                sql.push_str(&clauses.join(" OR "));
+                sql.push(')');
+            }
         }
         for tag in &parsed.tags {
             sql.push_str(" AND EXISTS (SELECT 1 FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE it.item_id = i.id AND t.name = ? COLLATE NOCASE)");
@@ -1401,21 +1533,142 @@ impl Library {
         content: &str,
         collection_ids: &[String],
     ) -> Result<Item, String> {
-        let id = self.insert_item("note", title, content, "", "", 0, "", "{}", collection_ids)?;
-        self.get_item(&id).map(|d| d.item)
+        let _files = self.files_lock.lock().unwrap();
+        let stem = native::sanitize_stem(if title.trim().is_empty() {
+            "无标题"
+        } else {
+            title
+        })?;
+        let dir = self.files_dir().join(uuid());
+        std::fs::create_dir_all(&dir).map_err(map_err)?;
+        let dest = dir.join(format!("{stem}.md"));
+        if let Err(error) = std::fs::write(&dest, content.as_bytes()) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(error.to_string());
+        }
+        let rel = self.relative_path(&dest);
+        let sha = native::sha256_bytes(content.as_bytes());
+        let meta = serde_json::json!({ "sha256": sha }).to_string();
+        match self.insert_item(
+            "file",
+            &stem,
+            content,
+            "",
+            &rel,
+            content.len() as i64,
+            "text/markdown",
+            &meta,
+            collection_ids,
+        ) {
+            Ok(id) => self.get_item(&id).map(|d| d.item),
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                Err(error)
+            }
+        }
     }
 
-    pub fn update_note(&self, id: &str, title: &str, content: &str) -> Result<Item, String> {
-        {
+    pub fn migrate_notes_to_files(&self) -> Result<(), String> {
+        let _files = self.files_lock.lock().unwrap();
+        let notes: Vec<(String, String, String)> = {
             let conn = self.db.lock().unwrap();
-            let updated = conn.execute(
-                "UPDATE items SET title = ?1, content = ?2, updated_at = datetime('now') WHERE id = ?3 AND type = 'note'",
-                params![title, content, id],
-            )
-            .map_err(map_err)?;
-            if updated != 1 {
-                return Err(format!("note not found: {id}"));
+            let mut stmt = conn
+                .prepare("SELECT id, title, content FROM items WHERE type = 'note'")
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(map_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(map_err)?
+        };
+        for (id, title, content) in notes {
+            let stem = native::safe_stem(&title);
+            let dir = self.files_dir().join(uuid());
+            std::fs::create_dir_all(&dir).map_err(map_err)?;
+            let dest = dir.join(format!("{stem}.md"));
+            if let Err(error) = std::fs::write(&dest, content.as_bytes()) {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(error.to_string());
             }
+            let rel = self.relative_path(&dest);
+            let sha = native::sha256_bytes(content.as_bytes());
+            let conn = self.db.lock().unwrap();
+            let updated = conn
+                .execute(
+                    "UPDATE items SET type = 'file', title = ?1, stored_path = ?2, \
+                     size = ?3, mime = 'text/markdown', \
+                     meta = json_set(CASE WHEN json_valid(meta) THEN meta ELSE '{}' END, '$.sha256', ?4) \
+                     WHERE id = ?5 AND type = 'note'",
+                    params![stem, rel, content.len() as i64, sha, id],
+                )
+                .map_err(map_err)?;
+            if updated != 1 {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(format!("迁移笔记失败: {id}"));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn rename_file(&self, id: &str, stem: &str, format: Option<&str>) -> Result<Item, String> {
+        let _files = self.files_lock.lock().unwrap();
+        let item = self.get_item(id)?.item;
+        if item.item_type != "file" || item.stored_path.is_empty() {
+            return Err("只有文件可以重命名".into());
+        }
+        if item.deleted_at.is_some() {
+            return Err("回收站中的文件不可改名".into());
+        }
+        let stem = native::sanitize_stem(stem)?;
+        let current_ext = native::file_extension(&item.stored_path);
+        let new_ext = if let Some(format) = format {
+            let canonical = native::canonical_format(format).ok_or("不支持的格式")?;
+            if native::canonical_format(&current_ext).is_none() {
+                return Err("此文件不能切换格式".into());
+            }
+            native::stored_extension(canonical)
+                .ok_or("不支持的格式")?
+                .to_string()
+        } else {
+            current_ext
+        };
+        let old_path = self.safe_stored_path(&item.stored_path)?;
+        let new_name = if new_ext.is_empty() {
+            stem.clone()
+        } else {
+            format!("{stem}.{new_ext}")
+        };
+        let new_path = old_path
+            .parent()
+            .ok_or("无效的库内文件目录")?
+            .join(new_name);
+        if new_path != old_path {
+            if new_path.exists() {
+                return Err("同名文件已存在".into());
+            }
+            std::fs::rename(&old_path, &new_path).map_err(map_err)?;
+        }
+        let rel = self.relative_path(&new_path);
+        let mime = import::mime_of(new_path.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+        let result = (|| {
+            let conn = self.db.lock().unwrap();
+            let updated = conn
+                .execute(
+                    "UPDATE items SET title = ?1, stored_path = ?2, mime = ?3, \
+                     updated_at = datetime('now') \
+                     WHERE id = ?4 AND type = 'file' AND deleted_at IS NULL",
+                    params![stem, rel, mime, id],
+                )
+                .map_err(map_err)?;
+            if updated != 1 {
+                return Err("文件条目不可改名".into());
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            if new_path != old_path {
+                let _ = std::fs::rename(&new_path, &old_path);
+            }
+            return Err(error);
         }
         self.get_item(id).map(|d| d.item)
     }
@@ -1932,15 +2185,15 @@ impl Library {
     ) -> Result<ItemDetail, String> {
         {
             let conn = self.db.lock().unwrap();
-            let parent_type: String = conn
+            let parent: (String, String) = conn
                 .query_row(
-                    "SELECT type FROM items WHERE id = ?1",
+                    "SELECT type, stored_path FROM items WHERE id = ?1",
                     params![parent_id],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .map_err(map_err)?;
-            if parent_type != "note" {
-                return Err("只有笔记可以挂附件".into());
+            if parent.0 != "file" || !native::is_switchable_text(&parent.1) {
+                return Err("只有文本文件可以挂附件".into());
             }
             for child_id in child_ids {
                 if child_id == parent_id {

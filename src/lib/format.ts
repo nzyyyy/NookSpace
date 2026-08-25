@@ -45,3 +45,11 @@ export const TYPE_LABEL: Record<string, string> = {
   file: "文件",
   link: "链接",
 };
+
+export const FORMAT_LABEL: Record<string, string> = {
+  md: "Markdown",
+  txt: "纯文本",
+  json: "JSON",
+  yaml: "YAML",
+  csv: "CSV",
+};

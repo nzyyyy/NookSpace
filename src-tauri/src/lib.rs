@@ -46,7 +46,7 @@ pub fn run() {
             commands::get_item,
             commands::export_item,
             commands::create_note,
-            commands::update_note,
+            commands::rename_file,
             commands::create_link,
             commands::delete_items,
             commands::restore_items,

@@ -195,8 +195,8 @@ export const ipc = {
   createNote: (title: string, content: string, collectionIds: string[]) =>
     invoke<Item>("create_note", { title, content, collectionIds }),
 
-  updateNote: (id: string, title: string, content: string) =>
-    invoke<Item>("update_note", { id, title, content }),
+  renameFile: (id: string, stem: string, format?: string | null) =>
+    invoke<Item>("rename_file", { id, stem, format: format ?? null }),
 
   createLink: (url: string, title: string, collectionIds: string[]) =>
     invoke<Item>("create_link", { url, title, collectionIds }),

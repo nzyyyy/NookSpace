@@ -178,14 +178,14 @@ pub async fn create_note(
 }
 
 #[tauri::command]
-pub async fn update_note(
+pub async fn rename_file(
     state: State<'_, Library>,
     id: String,
-    title: String,
-    content: String,
+    stem: String,
+    format: Option<String>,
 ) -> Result<Item, String> {
     let lib = state.inner().clone();
-    blocking(lib, move |l| l.update_note(&id, &title, &content)).await
+    blocking(lib, move |l| l.rename_file(&id, &stem, format.as_deref())).await
 }
 
 #[tauri::command]

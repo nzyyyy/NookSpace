@@ -37,9 +37,9 @@ Rust 层是一个"深模块"——所有 SQLite 与文件系统行为都藏在 `
 
 - 默认资料库：`~/Library/Application Support/com.nookspace.app/`（SQLite WAL + `files/`）
 - 固定启动目录保存 `library-location` 指针；移动/切换后资料库可在其他绝对路径。指针失效时启动失败，不创建空库或静默回退。
-- 库内文件：`files/<uuid>/<原名>`（导入即复制，源文件不动）
+- 库内文件：`files/<uuid>/<名.ext>`（导入即复制；新建笔记同为 File，默认 `.md`）
 - 缩略图：`~/Library/Caches/com.nookspace.app/thumb/<id>.png`
-- 统一 Item 模型；`meta` JSON 列存类型扩展（如 `sourcePath`、`sha256`）
+- 统一 Item 模型（File / Link）；`items.content` 是文本 File 的搜索副本；`meta` JSON 列存类型扩展（如 `sourcePath`、`sha256`）
 - 中文搜索路径：三字符以上 FTS5 trigram，1–2 字符 LIKE；PDF 原生文本保留在 `items.extracted_text`，扫描件不做 OCR
 - 002 迁移创建外部内容 `items_fts` 和同步触发器；列表最多返回 500 条，命令面板传入 20 条限制
 - 备份/移动在临时目录完成 SQLite 完整性与逐文件 SHA-256 校验后原子改名；缩略图缓存不进入资料库副本

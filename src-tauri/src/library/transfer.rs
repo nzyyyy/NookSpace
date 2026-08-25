@@ -154,8 +154,6 @@ impl Library {
         let _files = self.files_lock.lock().unwrap();
         let item = self.get_item(id)?.item;
         match item.item_type.as_str() {
-            "note" => fs::write(destination, item.content.as_bytes())
-                .map_err(|error| error.to_string())?,
             "file" if !item.stored_path.is_empty() => {
                 let source = self.safe_stored_path(&item.stored_path)?;
                 copy_file_verified(&source, destination)?;
@@ -297,7 +295,7 @@ impl Library {
                     id,
                     item_type,
                     title,
-                    content,
+                    _content,
                     url,
                     stored_path,
                     size,
@@ -315,14 +313,6 @@ impl Library {
                     "Active"
                 };
                 let exported = match item_type.as_str() {
-                    "note" => {
-                        let relative = PathBuf::from(bucket).join("Notes").join(format!("{id}.md"));
-                        let path = temporary.join(&relative);
-                        fs::create_dir_all(path.parent().unwrap())
-                            .map_err(|error| error.to_string())?;
-                        fs::write(&path, content.as_bytes()).map_err(|error| error.to_string())?;
-                        relative
-                    }
                     "link" => {
                         let relative = PathBuf::from(bucket)
                             .join("Links")

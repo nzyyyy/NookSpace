@@ -14,6 +14,7 @@ import {
   type TagColor,
 } from "@/core/ipc";
 import { collectionSubtreeIds } from "@/lib/collections";
+import { isSwitchableText } from "@/lib/file-types";
 
 export type View =
   | { kind: "all" }
@@ -31,7 +32,7 @@ export type NoteMode = "read" | "edit";
 const EMPTY_DETAIL: ItemDetail = {
   item: {
     id: "",
-    itemType: "note",
+    itemType: "file",
     title: "",
     content: "",
     url: "",
@@ -101,7 +102,7 @@ interface LibraryState {
   setNoteMode: (mode: NoteMode) => void;
 
   createNote: () => Promise<Item | null>;
-  saveNote: (id: string, title: string, content: string) => Promise<Item | null>;
+  renameFile: (id: string, stem: string, format?: string | null) => Promise<Item | null>;
   createLink: (url: string, title: string) => Promise<Item | null>;
   createCollection: (name: string, parentId?: string | null) => Promise<Collection | null>;
   renameCollection: (id: string, name: string) => Promise<void>;
@@ -311,7 +312,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
       set({
         detail: detail ?? EMPTY_DETAIL,
         detailLoading: false,
-        noteMode: detail?.item.itemType === "note" ? "edit" : "read",
+        noteMode: isSwitchableText(detail?.item.storedPath || detail?.item.title || "") ? "edit" : "read",
       });
     },
 
@@ -330,8 +331,8 @@ export const useLibrary = create<LibraryState>((set, get) => {
       return item;
     },
 
-    saveNote: async (id, title, content) => {
-      const item = await ipc.updateNote(id, title, content).catch(() => null);
+    renameFile: async (id, stem, format = null) => {
+      const item = await ipc.renameFile(id, stem, format).catch(() => null);
       if (!item) return null;
       get().upsertItem(item);
       const detail = get().detail;
