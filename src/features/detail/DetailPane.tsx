@@ -9,6 +9,7 @@ import {
   Link2,
   MoreHorizontal,
   Paperclip,
+  PanelLeftOpen,
   Star,
   Trash2,
   X,
@@ -24,8 +25,10 @@ import {
 import { formatFullDate, formatSize, TYPE_LABEL } from "@/lib/format";
 import { isMediaFile } from "@/lib/file-types";
 import { useLibrary } from "@/stores/library";
+import { useUi } from "@/stores/ui";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -659,6 +662,7 @@ function FilePreview({
 
 export function DetailPane() {
   const { detail, detailLoading, noteMode, setNoteMode, toggleFavorite } = useLibrary();
+  const { listCollapsed, toggleListCollapsed } = useUi();
   const headerRef = useRef<HTMLDivElement | null>(null);
   useTitlebarDrag(headerRef);
   const item = detail?.item;
@@ -789,6 +793,24 @@ export function DetailPane() {
     <section className="flex min-w-0 flex-1 flex-col bg-background">
       {/* Header — always present; the drag/zoom zone of this pane */}
       <div ref={headerRef} className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
+        {listCollapsed && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => toggleListCollapsed()}
+                aria-label="显示列表"
+                aria-keyshortcuts="Meta+\\"
+              >
+                <PanelLeftOpen className="size-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              显示列表 <kbd data-slot="kbd">⌘\</kbd>
+            </TooltipContent>
+          </Tooltip>
+        )}
         <h1 className="text-[15px] font-medium tracking-tight">
           {item ? TYPE_LABEL[item.itemType] : "详情"}
         </h1>

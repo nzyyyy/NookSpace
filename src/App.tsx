@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -7,8 +8,10 @@ import {
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { clampPaneWidth } from "@/lib/pane-width";
+import { cn } from "@/lib/utils";
 import { useLibrary, type View } from "@/stores/library";
 import { initTheme } from "@/stores/theme";
+import { useUi } from "@/stores/ui";
 import { useShortcuts } from "@/hooks/useShortcuts";
 import { Sidebar } from "@/features/sidebar/Sidebar";
 import { ItemList } from "@/features/list/ItemList";
@@ -25,12 +28,14 @@ interface NavEntry {
   id: string | null;
 }
 
-const LIST_MIN_WIDTH = 320;
+const LIST_MIN_WIDTH = 280;
+const LIST_DEFAULT_WIDTH = 280;
 const DETAIL_MIN_WIDTH = 360;
 
 export default function App() {
   useShortcuts();
   const { init } = useLibrary();
+  const listCollapsed = useUi((s) => s.listCollapsed);
 
   const backStack = useRef<NavEntry[]>([]);
   const fwdStack = useRef<NavEntry[]>([]);
@@ -42,7 +47,7 @@ export default function App() {
     availableWidth: number;
     minimumWidth: number;
   } | undefined>(undefined);
-  const [listWidth, setListWidth] = useState<number>();
+  const [listWidth, setListWidth] = useState(LIST_DEFAULT_WIDTH);
 
   // Theme + library bootstrap
   useEffect(() => {
@@ -125,6 +130,16 @@ export default function App() {
     return Math.max(LIST_MIN_WIDTH, (toolbar?.scrollWidth ?? 0) - (spacer?.offsetWidth ?? 0));
   };
 
+  useLayoutEffect(() => {
+    if (listCollapsed || !listPane.current || !detailPane.current) return;
+    setListWidth((current) => clampPaneWidth(
+      current,
+      listPane.current!.getBoundingClientRect().width + detailPane.current!.getBoundingClientRect().width,
+      listMinimumWidth(),
+      DETAIL_MIN_WIDTH,
+    ));
+  }, [listCollapsed]);
+
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || !listPane.current || !detailPane.current) return;
     const startWidth = listPane.current.getBoundingClientRect().width;
@@ -165,21 +180,27 @@ export default function App() {
     <TooltipProvider delayDuration={300}>
       <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
         <Sidebar />
-        <div ref={listPane} className="flex min-w-[320px] flex-1" style={listWidth === undefined ? undefined : { flex: `0 1 ${listWidth}px` }}>
+        <div
+          ref={listPane}
+          className={cn("flex", listCollapsed && "hidden")}
+          style={listCollapsed ? undefined : { flex: `0 1 ${listWidth}px`, minWidth: LIST_MIN_WIDTH }}
+        >
           <ItemList />
         </div>
-        <div
-          role="separator"
-          aria-label="调整中间栏和右侧栏宽度"
-          aria-orientation="vertical"
-          tabIndex={0}
-          className="group relative z-10 -mx-1 w-2 shrink-0 touch-none cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-border after:content-[''] hover:after:bg-primary focus-visible:after:bg-primary active:after:bg-primary"
-          onPointerDown={startResize}
-          onPointerMove={resizePanes}
-          onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
-          onLostPointerCapture={() => { resize.current = undefined; }}
-          onKeyDown={resizeWithKeyboard}
-        />
+        {!listCollapsed && (
+          <div
+            role="separator"
+            aria-label="调整列表栏和阅读栏宽度"
+            aria-orientation="vertical"
+            tabIndex={0}
+            className="group relative z-10 -mx-1 w-2 shrink-0 touch-none cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-border after:content-[''] hover:after:bg-primary focus-visible:after:bg-primary active:after:bg-primary"
+            onPointerDown={startResize}
+            onPointerMove={resizePanes}
+            onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
+            onLostPointerCapture={() => { resize.current = undefined; }}
+            onKeyDown={resizeWithKeyboard}
+          />
+        )}
         <div ref={detailPane} className="flex min-w-[360px] flex-1">
           <DetailPane />
         </div>

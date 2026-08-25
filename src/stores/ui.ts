@@ -15,9 +15,14 @@ interface UiState {
 
   listLayout: ListLayout;
   setListLayout: (layout: ListLayout) => void;
+
+  listCollapsed: boolean;
+  setListCollapsed: (collapsed: boolean) => void;
+  toggleListCollapsed: () => void;
 }
 
 const savedLayout = localStorage.getItem("nookspace.list-layout.v1");
+const savedCollapsed = localStorage.getItem("nookspace.list-collapsed.v1");
 
 export const useUi = create<UiState>((set, get) => ({
   paletteOpen: false,
@@ -35,4 +40,11 @@ export const useUi = create<UiState>((set, get) => ({
     localStorage.setItem("nookspace.list-layout.v1", listLayout);
     set({ listLayout });
   },
+
+  listCollapsed: savedCollapsed === "1",
+  setListCollapsed: (listCollapsed) => {
+    localStorage.setItem("nookspace.list-collapsed.v1", listCollapsed ? "1" : "0");
+    set({ listCollapsed });
+  },
+  toggleListCollapsed: () => get().setListCollapsed(!get().listCollapsed),
 }));

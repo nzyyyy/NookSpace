@@ -23,6 +23,12 @@ export function useShortcuts() {
         useUi.getState().togglePalette();
         return;
       }
+      // Cmd+\ — toggle the item list so reading/editing can fill the window.
+      if (mod && !e.shiftKey && e.code === "Backslash") {
+        e.preventDefault();
+        useUi.getState().toggleListCollapsed();
+        return;
+      }
       // Cmd+E — toggle the selected note between reading and editing.
       if (mod && e.key.toLowerCase() === "e") {
         const lib = useLibrary.getState();
@@ -61,10 +67,11 @@ export function useShortcuts() {
         })();
         return;
       }
-      // Cmd+F — focus list search
+      // Cmd+F — focus list search (expand the list first if it is collapsed)
       if (mod && e.key.toLowerCase() === "f" && !inField) {
         e.preventDefault();
-        document.getElementById("list-search")?.focus();
+        if (useUi.getState().listCollapsed) useUi.getState().setListCollapsed(false);
+        requestAnimationFrame(() => document.getElementById("list-search")?.focus());
         return;
       }
       // Cmd+1/2/3 — smart views

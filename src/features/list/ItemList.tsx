@@ -16,6 +16,7 @@ import {
   ListPlus,
   LayoutGrid,
   Music,
+  PanelLeftClose,
   Plus,
   Star,
   Tags,
@@ -29,16 +30,19 @@ import { collectionPath } from "@/lib/collections";
 import { tagBadgeClass, tagDotClass } from "@/lib/tag-colors";
 import { isMediaFile } from "@/lib/file-types";
 import { useLibrary, type SortKey, type View } from "@/stores/library";
-import { useUi } from "@/stores/ui";
+import { useUi, type ListLayout } from "@/stores/ui";
 import { useTitlebarDrag } from "@/hooks/useTitlebarDrag";
 import { EmptyState } from "@/features/empty/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -282,8 +286,126 @@ const SORTS: { key: SortKey; label: string; icon: typeof ArrowUpDown }[] = [
   { key: "type", label: "按类型", icon: ListPlus },
 ];
 
+function ListViewChrome({
+  listLayout,
+  setListLayout,
+  sort,
+  setSort,
+}: {
+  listLayout: ListLayout;
+  setListLayout: (layout: ListLayout) => void;
+  sort: SortKey;
+  setSort: (sort: SortKey) => void;
+}) {
+  const current = SORTS.find((item) => item.key === sort) ?? SORTS[0];
+  const SortIcon = current.icon;
+  const [sortOpen, setSortOpen] = useState(false);
+  return (
+    <>
+      <div className="flex rounded-md bg-muted p-0.5" aria-label="条目布局">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant={listLayout === "list" ? "secondary" : "ghost"} size="icon-xs" onClick={() => setListLayout("list")} aria-label="列表视图">
+              <List className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>列表视图</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant={listLayout === "grid" ? "secondary" : "ghost"} size="icon-xs" onClick={() => setListLayout("grid")} aria-label="网格视图">
+              <LayoutGrid className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>网格视图</TooltipContent>
+        </Tooltip>
+      </div>
+      <DropdownMenu open={sortOpen} onOpenChange={setSortOpen}>
+        <Tooltip open={sortOpen ? false : undefined}>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon-xs" aria-label={`排序：${current.label}`}>
+                <SortIcon className="size-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent>排序：{current.label}</TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent
+          align="end"
+          className="w-max min-w-44"
+          onCloseAutoFocus={(event) => event.preventDefault()}
+        >
+          <DropdownMenuRadioGroup value={sort} onValueChange={(value) => setSort(value as SortKey)}>
+            {SORTS.map((item) => (
+              <DropdownMenuRadioItem key={item.key} value={item.key} className="whitespace-nowrap">
+                <item.icon className="size-3.5" /> {item.label}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </>
+  );
+}
+
+function CreateMenu() {
+  const { createNote, importPaths } = useLibrary();
+  const [open, setOpen] = useState(false);
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <Tooltip open={open ? false : undefined}>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <Button size="icon-sm" aria-label="新建">
+              <Plus className="size-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>新建</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent
+        align="end"
+        className="w-44"
+        onCloseAutoFocus={(event) => event.preventDefault()}
+      >
+        <DropdownMenuItem
+          onSelect={() => {
+            void createNote().then((item) => item && toast.success("已新建笔记"));
+          }}
+        >
+          <FilePlus2 className="size-3.5" /> 新建笔记
+          <kbd className="ml-auto font-mono text-[10px] text-muted-foreground">⌘N</kbd>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => {
+            void (async () => {
+              const picked = await openDialog({
+                multiple: true,
+                directory: false,
+                title: "导入文件",
+              });
+              if (picked && picked.length > 0) {
+                const r = await importPaths(picked);
+                if (r) {
+                  toast.success(
+                    `已导入 ${r.imported.length} 个文件${r.skipped.length ? `，跳过 ${r.skipped.length} 个` : ""}`,
+                  );
+                }
+              }
+            })();
+          }}
+        >
+          <FolderOpen className="size-3.5" /> 导入文件…
+          <kbd className="ml-auto font-mono text-[10px] text-muted-foreground">⇧⌘N</kbd>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 export function ItemList() {
-  const { listLayout, setListLayout } = useUi();
+  const { listLayout, setListLayout, toggleListCollapsed } = useUi();
   const {
     ready,
     items,
@@ -310,8 +432,6 @@ export function ItemList() {
     purgeItems,
     emptyTrash,
     setItemTags,
-    createNote,
-    importPaths,
     createSavedView,
   } = useLibrary();
 
@@ -344,6 +464,22 @@ export function ItemList() {
     <section className="flex min-w-0 flex-1 flex-col bg-background">
       {/* Toolbar — also a window drag zone (buttons excluded) */}
       <div ref={toolbarRef} data-pane-toolbar className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => toggleListCollapsed()}
+              aria-label="隐藏列表"
+              aria-keyshortcuts="Meta+\\"
+            >
+              <PanelLeftClose className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            隐藏列表 <kbd data-slot="kbd">⌘\</kbd>
+          </TooltipContent>
+        </Tooltip>
         {batch.length > 0 ? (
           <>
             <span className="font-mono text-[12px] text-muted-foreground">
@@ -453,72 +589,12 @@ export function ItemList() {
           </>
         ) : (
           <>
-            <h1 className="shrink-0 whitespace-nowrap text-[15px] font-medium tracking-tight">{title}</h1>
+            <h1 className="min-w-0 truncate text-[15px] font-medium tracking-tight">{title}</h1>
             <span className="font-mono text-[11px] text-muted-foreground">{items.length}</span>
             <div data-pane-spacer className="flex-1" />
-            <div className="flex rounded-md bg-muted p-0.5" aria-label="条目布局">
-              <Button variant={listLayout === "list" ? "secondary" : "ghost"} size="icon-xs" onClick={() => setListLayout("list")} aria-label="列表视图">
-                <List className="size-3.5" />
-              </Button>
-              <Button variant={listLayout === "grid" ? "secondary" : "ghost"} size="icon-xs" onClick={() => setListLayout("grid")} aria-label="网格视图">
-                <LayoutGrid className="size-3.5" />
-              </Button>
-            </div>
             {!isTrash && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button size="sm">
-                    <Plus className="size-3.5" /> 新建
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-44">
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      void createNote().then((item) => item && toast.success("已新建笔记"));
-                    }}
-                  >
-                    <FilePlus2 className="size-3.5" /> 新建笔记
-                    <kbd className="ml-auto font-mono text-[10px] text-muted-foreground">⌘N</kbd>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      void (async () => {
-                        const picked = await openDialog({
-                          multiple: true,
-                          directory: false,
-                          title: "导入文件",
-                        });
-                        if (picked && picked.length > 0) {
-                          const r = await importPaths(picked);
-                          if (r) {
-                            toast.success(
-                              `已导入 ${r.imported.length} 个文件${r.skipped.length ? `，跳过 ${r.skipped.length} 个` : ""}`,
-                            );
-                          }
-                        }
-                      })();
-                    }}
-                  >
-                    <FolderOpen className="size-3.5" /> 导入文件…
-                    <kbd className="ml-auto font-mono text-[10px] text-muted-foreground">⇧⌘N</kbd>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <CreateMenu />
             )}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="text-muted-foreground">
-                  {SORTS.find((s) => s.key === sort)?.label}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent>
-                {SORTS.map((s) => (
-                  <DropdownMenuItem key={s.key} onSelect={() => setSort(s.key)}>
-                    <s.icon className="size-3.5" /> {s.label}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
             {isTrash && (
               <Button
                 variant="ghost"
@@ -536,26 +612,32 @@ export function ItemList() {
         )}
       </div>
 
-      {/* Search */}
-      {!isTrash && (
-        <div className="flex shrink-0 gap-1 px-3 pt-2">
+      <div className="flex shrink-0 items-center gap-1 px-3 pt-2">
+        {!isTrash && (
           <Input
             id="list-search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索标题、内容、文件名…"
-            className="h-7 text-[13px]"
+            className="h-7 min-w-0 flex-1 text-[13px]"
           />
-          {query.trim() && (
-            <Button variant="ghost" size="icon-sm" onClick={() => {
-              setSaveName(query.trim());
-              setSaveOpen(true);
-            }} aria-label="保存当前搜索">
-              <BookmarkPlus className="size-3.5" />
-            </Button>
-          )}
-        </div>
-      )}
+        )}
+        {!isTrash && query.trim() && (
+          <Button variant="ghost" size="icon-sm" onClick={() => {
+            setSaveName(query.trim());
+            setSaveOpen(true);
+          }} aria-label="保存当前搜索">
+            <BookmarkPlus className="size-3.5" />
+          </Button>
+        )}
+        {isTrash && <div className="min-w-0 flex-1" />}
+        <ListViewChrome
+          listLayout={listLayout}
+          setListLayout={setListLayout}
+          sort={sort}
+          setSort={setSort}
+        />
+      </div>
       {listTruncated && (
         <p className="px-4 pt-1 font-mono text-[10.5px] text-muted-foreground">仅显示前 500 条，请继续细化搜索</p>
       )}

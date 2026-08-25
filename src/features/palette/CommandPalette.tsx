@@ -6,6 +6,8 @@ import {
   Inbox,
   Link2,
   LayoutGrid,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Search,
   Star,
@@ -34,7 +36,7 @@ import { tagDotClass } from "@/lib/tag-colors";
 import { cn } from "@/lib/utils";
 
 export function CommandPalette() {
-  const { paletteOpen, setPaletteOpen, listLayout, setListLayout } = useUi();
+  const { paletteOpen, setPaletteOpen, listLayout, setListLayout, listCollapsed, toggleListCollapsed } = useUi();
   const lib = useLibrary();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ItemSummary[]>([]);
@@ -151,6 +153,14 @@ export function CommandPalette() {
                 close();
               }}>
                 <LayoutGrid className="size-3.5" /> 切换为{listLayout === "list" ? "网格" : "列表"}视图
+              </CommandItem>
+              <CommandItem onSelect={() => {
+                toggleListCollapsed();
+                close();
+              }}>
+                {listCollapsed ? <PanelLeftOpen className="size-3.5" /> : <PanelLeftClose className="size-3.5" />}
+                {listCollapsed ? "显示列表" : "隐藏列表"}
+                <kbd className="ml-auto font-mono text-[10px] text-muted-foreground">⌘\</kbd>
               </CommandItem>
             </CommandGroup>
 
