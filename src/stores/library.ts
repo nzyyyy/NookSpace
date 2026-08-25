@@ -108,8 +108,8 @@ interface LibraryState {
   renameCollection: (id: string, name: string) => Promise<void>;
   moveCollection: (id: string, parentId: string | null, beforeId: string | null) => Promise<boolean>;
   deleteCollectionTree: (id: string) => Promise<number>;
-  addToCollection: (ids: string[], collectionId: string) => Promise<void>;
-  removeFromCollection: (ids: string[], collectionId: string) => Promise<void>;
+  addToCollection: (ids: string[], collectionId: string) => Promise<boolean>;
+  removeFromCollection: (ids: string[], collectionId: string) => Promise<boolean>;
   createTag: (name: string) => Promise<Tag | null>;
   renameTag: (id: string, name: string) => Promise<void>;
   setTagColor: (id: string, color: TagColor | null) => Promise<void>;
@@ -387,13 +387,15 @@ export const useLibrary = create<LibraryState>((set, get) => {
     },
 
     addToCollection: async (ids, collectionId) => {
-      await ipc.addItemsToCollection(ids, collectionId).catch(() => undefined);
-      await get().refresh();
+      const ok = await ipc.addItemsToCollection(ids, collectionId).then(() => true).catch(() => false);
+      if (ok) await get().refresh();
+      return ok;
     },
 
     removeFromCollection: async (ids, collectionId) => {
-      await ipc.removeItemsFromCollection(ids, collectionId).catch(() => undefined);
-      await get().refresh();
+      const ok = await ipc.removeItemsFromCollection(ids, collectionId).then(() => true).catch(() => false);
+      if (ok) await get().refresh();
+      return ok;
     },
 
     createTag: async (name) => {
@@ -469,7 +471,10 @@ export const useLibrary = create<LibraryState>((set, get) => {
 
     setItemTags: async (itemId, tagIds) => {
       const item = await ipc.setItemTags(itemId, tagIds).catch(() => null);
-      if (item) get().upsertItem(item);
+      if (!item) return;
+      get().upsertItem(item);
+      const { detail } = get();
+      if (detail?.item.id === itemId) set({ detail: { ...detail, item } });
     },
 
     toggleFavorite: async (id) => {

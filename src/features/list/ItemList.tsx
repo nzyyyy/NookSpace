@@ -43,11 +43,16 @@ import {
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { CollectionPicker } from "@/features/list/CollectionPicker";
 import {
   Dialog,
   DialogContent,
@@ -426,8 +431,6 @@ export function ItemList() {
     toggleMulti,
     openItem,
     clearMulti,
-    addToCollection,
-    removeFromCollection,
     deleteItems,
     restoreItems,
     purgeItems,
@@ -440,8 +443,6 @@ export function ItemList() {
   const isTrash = view.kind === "trash";
   const batch = multiIds;
   const batchSet = useMemo(() => new Set(batch), [batch]);
-
-  const targetCollection = view.kind === "collection" ? view.id : null;
 
   const handleActivate = (id: string) => (e: React.MouseEvent) => {
     if (e.metaKey || e.ctrlKey) void toggleMulti(id, true, false);
@@ -493,7 +494,7 @@ export function ItemList() {
                     <Tags className="size-3.5" /> 标签
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent className="max-h-72 w-52 overflow-y-auto">
+                <DropdownMenuContent className="w-max min-w-32 max-w-48">
                   <DropdownMenuLabel>添加标签</DropdownMenuLabel>
                   {tagPicker.map((t) => (
                     <DropdownMenuItem
@@ -518,41 +519,16 @@ export function ItemList() {
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
+              <Popover>
+                <PopoverTrigger asChild>
                   <Button variant="ghost" size="sm">
                     <Folder className="size-3.5" /> 集合
                   </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent className="max-h-72 w-52 overflow-y-auto">
-                  <DropdownMenuLabel>加入集合</DropdownMenuLabel>
-                  {collections.map((c) => (
-                    <DropdownMenuItem
-                      key={c.id}
-                      onSelect={() => {
-                        void addToCollection(batch, c.id);
-                        toast.success(`已加入「${c.name}」`);
-                      }}
-                    >
-                      {c.name}
-                    </DropdownMenuItem>
-                  ))}
-                  {targetCollection && (
-                    <>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        variant="destructive"
-                        onSelect={() => {
-                          void removeFromCollection(batch, targetCollection);
-                          toast.success("已移出当前集合");
-                        }}
-                      >
-                        移出当前集合
-                      </DropdownMenuItem>
-                    </>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-max min-w-32 max-w-48 p-1">
+                  <CollectionPicker itemIds={batch} />
+                </PopoverContent>
+              </Popover>
 
               {isTrash ? (
                 <>

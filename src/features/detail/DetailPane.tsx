@@ -1,10 +1,12 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  Check,
   ChevronDown,
   Download,
   ExternalLink,
   File as FileIcon,
+  Folder,
   FolderPlus,
   Image as ImageIcon,
   Link2,
@@ -12,6 +14,7 @@ import {
   Paperclip,
   PanelLeftOpen,
   Star,
+  Tags,
   Trash2,
   X,
 } from "lucide-react";
@@ -36,6 +39,7 @@ import { parseCsv, prettyJson } from "@/lib/text-views";
 import { useLibrary } from "@/stores/library";
 import { useUi } from "@/stores/ui";
 import { cn } from "@/lib/utils";
+import { CollectionPicker } from "@/features/list/CollectionPicker";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
@@ -59,7 +63,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useTitlebarDrag } from "@/hooks/useTitlebarDrag";
 import { toast } from "sonner";
 import { createSerialNoteSaver } from "@/lib/note-draft";
-import { tagBadgeClass, tagDotClass } from "@/lib/tag-colors";
+import { tagDotClass } from "@/lib/tag-colors";
 import {
   classifyTextFileDraft,
   createSerialTextFileDraftWriter,
@@ -86,96 +90,72 @@ function EmptyDetail() {
 }
 
 function TagsEditor({ item }: { item: Item }) {
-  const { tags, setItemTags, createTag } = useLibrary();
-  const [open, setOpen] = useState(false);
-  const [input, setInput] = useState("");
+  const { tags, setItemTags } = useLibrary();
 
-  const addTag = (tagId: string) => {
-    if (item.tags.some((t) => t.id === tagId)) return;
-    void setItemTags(item.id, [...item.tags.map((t) => t.id), tagId]);
-  };
-  const removeTag = (tagId: string) => {
-    void setItemTags(item.id, item.tags.filter((t) => t.id !== tagId).map((t) => t.id));
-  };
-
-  const filtered = tags.filter(
-    (t) => !item.tags.some((x) => x.id === t.id) && t.name.toLowerCase().includes(input.toLowerCase()),
-  );
-
-  const commit = async () => {
-    const name = input.trim();
-    if (!name) return;
-    const match = tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
-    if (match) {
-      addTag(match.id);
-    } else {
-      const created = await createTag(name);
-      if (created) addTag(created.id);
-      else toast.error("标签创建失败（可能已存在）");
+  const assigned = (tagId: string) => item.tags.some((tag) => tag.id === tagId);
+  const toggle = (tagId: string) => {
+    if (assigned(tagId)) {
+      void setItemTags(item.id, item.tags.filter((tag) => tag.id !== tagId).map((tag) => tag.id));
+      return;
     }
-    setInput("");
+    void setItemTags(item.id, [...item.tags.map((tag) => tag.id), tagId]);
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-1">
-      {item.tags.map((t) => (
-        <span
-          key={t.id}
-          className={cn("group flex items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px]", tagBadgeClass(t.color))}
-        >
-          {t.name}
-          <button
-            className="text-muted-foreground opacity-60 hover:text-foreground group-hover:opacity-100"
-            onClick={() => removeTag(t.id)}
-            aria-label={`移除标签 ${t.name}`}
-          >
-            <X className="size-3" />
-          </button>
-        </span>
-      ))}
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button variant="ghost" size="xs" className="text-muted-foreground">
-            + 标签
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-60 p-1.5">
-          <Input
-            autoFocus
-            value={input}
-            placeholder="输入并回车，或选择已有标签"
-            className="mb-1 h-7 text-[12.5px]"
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void commit();
-            }}
-          />
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" size="sm" className="text-muted-foreground">
+          <Tags className="size-3.5" />
+          标签
+          {item.tags.length > 0 && <span className="font-mono text-[11px]">{item.tags.length}</span>}
+          <ChevronDown className="size-3 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-max min-w-32 max-w-48 p-1">
+        {tags.length === 0 ? (
+          <p className="px-1.5 py-2 text-[12.5px] text-muted-foreground">还没有标签，请在侧栏新建</p>
+        ) : (
           <div className="flex max-h-48 flex-col gap-px overflow-y-auto">
-            {filtered.map((t) => (
-              <button
-                key={t.id}
-                className="flex items-center gap-1.5 rounded px-1.5 py-1 text-left text-[12.5px] hover:bg-accent"
-                onClick={() => {
-                  addTag(t.id);
-                  setInput("");
-                }}
-              >
-                <span className={cn("size-2 rounded-full", tagDotClass(t.color))} />
-                {t.name}
-              </button>
-            ))}
-            {input.trim() && !tags.some((t) => t.name.toLowerCase() === input.toLowerCase()) && (
-              <button
-                className="flex items-center gap-1.5 rounded px-1.5 py-1 text-left text-[12.5px] text-primary hover:bg-accent"
-                onClick={() => void commit()}
-              >
-                创建「{input.trim()}」
-              </button>
-            )}
+            {tags.map((tag) => {
+              const on = assigned(tag.id);
+              return (
+                <button
+                  key={tag.id}
+                  type="button"
+                  className="flex h-6 items-center gap-1 rounded px-1.5 text-left text-[12.5px] whitespace-nowrap hover:bg-accent"
+                  aria-pressed={on}
+                  onClick={() => toggle(tag.id)}
+                >
+                  <Check className={cn("size-3 shrink-0", on ? "opacity-100" : "opacity-0")} />
+                  <span className={cn("size-2 shrink-0 rounded-full", tagDotClass(tag.color))} />
+                  <span className="min-w-0 truncate">{tag.name}</span>
+                </button>
+              );
+            })}
           </div>
-        </PopoverContent>
-      </Popover>
-    </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function CollectionsEditor({ item }: { item: Item }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" size="sm" className="text-muted-foreground">
+          <Folder className="size-3.5" />
+          集合
+          {item.collections.length > 0 && (
+            <span className="font-mono text-[11px]">{item.collections.length}</span>
+          )}
+          <ChevronDown className="size-3 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-max min-w-36 max-w-48 p-1">
+        <CollectionPicker itemIds={[item.id]} />
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -190,9 +170,48 @@ function Attachments({ item }: { item: Item }) {
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-1 text-[11px] font-medium tracking-wider text-muted-foreground/80 uppercase">
-        <Paperclip className="size-3" /> 附件
-        {attachments.length > 0 && <span className="font-mono">{attachments.length}</span>}
+      <div className="flex items-center gap-1">
+        <span className="flex items-center gap-1 text-[11px] font-medium tracking-wider text-muted-foreground/80 uppercase">
+          <Paperclip className="size-3" /> 附件
+          {attachments.length > 0 && <span className="font-mono">{attachments.length}</span>}
+        </span>
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button variant="ghost" size="xs" className="text-muted-foreground">
+              <FolderPlus className="size-3.5" /> 添加附件
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-max min-w-40 max-w-52 p-1">
+            {attachable.length === 0 ? (
+              <p className="px-1.5 py-1 text-[12px] text-muted-foreground">
+                先导入一些文件，再挂到这份文本上
+              </p>
+            ) : (
+              <div className="flex max-h-56 flex-col gap-px overflow-y-auto">
+                {attachable.map((f) => (
+                  <button
+                    key={f.id}
+                    className="flex h-6 items-center gap-1.5 rounded px-1.5 text-left text-[12.5px] whitespace-nowrap hover:bg-accent"
+                    onClick={() => {
+                      void addAttachments(item.id, [f.id]);
+                      setOpen(false);
+                    }}
+                  >
+                    {f.mime.startsWith("image/") ? (
+                      <ImageIcon className="size-3 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <FileIcon className="size-3 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{f.title}</span>
+                    <span className="font-mono text-[10.5px] text-muted-foreground">
+                      {formatSize(f.size)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </PopoverContent>
+        </Popover>
       </div>
       {attachments.map((a) => (
         <div
@@ -215,43 +234,6 @@ function Attachments({ item }: { item: Item }) {
           </button>
         </div>
       ))}
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button variant="ghost" size="xs" className="justify-start text-muted-foreground">
-            <FolderPlus className="size-3.5" /> 添加附件
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-64 p-1.5">
-          {attachable.length === 0 ? (
-            <p className="px-1.5 py-1 text-[12px] text-muted-foreground">
-              先导入一些文件，再挂到这份文本上
-            </p>
-          ) : (
-            <div className="flex max-h-56 flex-col gap-px overflow-y-auto">
-              {attachable.map((f) => (
-                <button
-                  key={f.id}
-                  className="flex items-center gap-2 rounded px-1.5 py-1 text-left text-[12.5px] hover:bg-accent"
-                  onClick={() => {
-                    void addAttachments(item.id, [f.id]);
-                    setOpen(false);
-                  }}
-                >
-                  {f.mime.startsWith("image/") ? (
-                    <ImageIcon className="size-3.5 text-muted-foreground" />
-                  ) : (
-                    <FileIcon className="size-3.5 text-muted-foreground" />
-                  )}
-                  <span className="min-w-0 flex-1 truncate">{f.title}</span>
-                  <span className="font-mono text-[10.5px] text-muted-foreground">
-                    {formatSize(f.size)}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-        </PopoverContent>
-      </Popover>
     </div>
   );
 }
@@ -847,6 +829,12 @@ export function DetailPane() {
         <h1 className="text-[15px] font-medium tracking-tight">
           详情
         </h1>
+        {item && (
+          <>
+            <CollectionsEditor item={item} />
+            <TagsEditor item={item} />
+          </>
+        )}
         <div className="flex-1" />
         {item?.itemType === "file" && (
           <div ref={setFileHeaderActions} className="flex items-center gap-2" />
@@ -964,17 +952,14 @@ export function DetailPane() {
 
           </div>
         </ScrollArea>
-        <footer
-          className="max-h-[35%] shrink-0 overflow-y-auto border-t border-border px-6 py-3"
-          aria-label="条目信息"
-        >
-          <div className="flex flex-col gap-3">
-            <TagsEditor item={item} />
-            {item.itemType === "file" && isSwitchableText(item.storedPath || item.title) && !isTrashed && (
-              <Attachments item={item} />
-            )}
-          </div>
-        </footer>
+        {item.itemType === "file" && isSwitchableText(item.storedPath || item.title) && !isTrashed && (
+          <footer
+            className="max-h-[35%] shrink-0 overflow-y-auto border-t border-border px-6 py-3"
+            aria-label="附件"
+          >
+            <Attachments item={item} />
+          </footer>
+        )}
       </div>
       )}
     </section>
