@@ -75,6 +75,7 @@ import {
 
 const PdfPreview = lazy(() => import("@/components/PdfPreview"));
 const TextEditor = lazy(() => import("./TextEditor"));
+const CsvTable = lazy(() => import("./CsvTable"));
 
 function EmptyDetail() {
   return (
@@ -345,6 +346,7 @@ function TextFileEditor({
   const snapshotter = useRef<ReturnType<typeof createTextSnapshotScheduler> | null>(null);
   const updateContentRef = useRef<(content: string) => void>(() => undefined);
   const mode = item.deletedAt ? "read" : noteMode;
+  const format = canonicalFormat(fileExtension(item.storedPath || item.title));
 
   const warnDraftFailure = () => {
     if (draftWarningShown.current) return;
@@ -638,15 +640,25 @@ function TextFileEditor({
         )}
 
         <Suspense fallback={<p className="py-12 text-center font-mono text-[11px] text-muted-foreground">正在载入编辑器…</p>}>
-          <TextEditor
-            initialContent={content}
-            readOnly={mode === "read" || Boolean(item.deletedAt)}
-            ariaLabel={`${mode === "read" ? "阅读" : "编辑"} ${item.title}`}
-            onDocumentChange={stageSnapshot}
-            onEscape={() => {
-              if (mode === "edit") changeMode("read");
-            }}
-          />
+          {mode === "read" && format === "csv" ? (
+            <CsvTable content={content} />
+          ) : (
+            <TextEditor
+              initialContent={content}
+              format={format}
+              readOnly={mode === "read" || Boolean(item.deletedAt)}
+              livePreview={
+                (mode === "read" || Boolean(item.deletedAt))
+                && format === "md"
+                && !isLargeTextFile(item.size, content.length)
+              }
+              ariaLabel={`${mode === "read" ? "阅读" : "编辑"} ${item.title}`}
+              onDocumentChange={stageSnapshot}
+              onEscape={() => {
+                if (mode === "edit") changeMode("read");
+              }}
+            />
+          )}
         </Suspense>
       </div>
     </>

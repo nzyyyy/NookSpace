@@ -58,6 +58,9 @@
   --input: #e2dfd9;
   --ring: #17705b;
   --radius: 0.375rem;
+  --cm-string: #047857;
+  --cm-number: #1d4ed8;
+  --cm-bool: #b45309;
 }
 
 .dark {
@@ -80,6 +83,9 @@
   --border: #2f2c28;
   --input: #34302b;
   --ring: #45b49a;
+  --cm-string: #6ee7b7;
+  --cm-number: #93c5fd;
+  --cm-bool: #fcd34d;
 }
 
 @layer base {
