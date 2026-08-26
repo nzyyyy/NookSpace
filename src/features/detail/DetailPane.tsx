@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Check,
@@ -31,11 +31,11 @@ import {
   canonicalFormat,
   displayStem,
   fileExtension,
+  isLargeTextFile,
   isMediaFile,
   isSwitchableText,
   SWITCHABLE_FORMATS,
 } from "@/lib/file-types";
-import { parseCsv } from "@/lib/text-views";
 import { useLibrary } from "@/stores/library";
 import { useUi } from "@/stores/ui";
 import { cn } from "@/lib/utils";
@@ -43,7 +43,6 @@ import { CollectionPicker } from "@/features/list/CollectionPicker";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   DropdownMenu,
@@ -67,15 +66,15 @@ import { tagDotClass } from "@/lib/tag-colors";
 import {
   classifyTextFileDraft,
   createSerialTextFileDraftWriter,
+  createTextSnapshotScheduler,
   deleteTextFileDraft,
   deleteTextFileDraftIfContentMatches,
   readTextFileDraft,
   type TextFileDraft,
 } from "@/lib/text-file-draft";
 
-const MarkdownPreview = lazy(() => import("./MarkdownPreview"));
 const PdfPreview = lazy(() => import("@/components/PdfPreview"));
-const StructuredDataView = lazy(() => import("./StructuredDataView"));
+const TextEditor = lazy(() => import("./TextEditor"));
 
 function EmptyDetail() {
   return (
@@ -91,7 +90,8 @@ function EmptyDetail() {
 }
 
 function TagsEditor({ item }: { item: Item }) {
-  const { tags, setItemTags } = useLibrary();
+  const tags = useLibrary((state) => state.tags);
+  const setItemTags = useLibrary((state) => state.setItemTags);
 
   const assigned = (tagId: string) => item.tags.some((tag) => tag.id === tagId);
   const toggle = (tagId: string) => {
@@ -161,8 +161,10 @@ function CollectionsEditor({ item }: { item: Item }) {
 }
 
 function Attachments({ item }: { item: Item }) {
-  const { detail, items, addAttachments, removeAttachment } = useLibrary();
-  const attachments = detail?.attachments ?? [];
+  const attachments = useLibrary((state) => state.detail?.attachments) ?? [];
+  const items = useLibrary((state) => state.items);
+  const addAttachments = useLibrary((state) => state.addAttachments);
+  const removeAttachment = useLibrary((state) => state.removeAttachment);
   const [open, setOpen] = useState(false);
 
   const attachable = items.filter(
@@ -240,107 +242,6 @@ function Attachments({ item }: { item: Item }) {
 }
 
 type TextFileSaveState = "idle" | "dirty" | "saving" | "saved" | "error" | "conflict";
-
-function useAutosizeTextarea(value: string, active: boolean) {
-  const ref = useRef<HTMLTextAreaElement>(null);
-
-  useLayoutEffect(() => {
-    const textarea = ref.current;
-    if (!textarea || !active) return;
-
-    const resize = () => {
-      textarea.style.height = "auto";
-      textarea.style.height = `${textarea.scrollHeight}px`;
-    };
-    let width = textarea.clientWidth;
-    const observer = new ResizeObserver(() => {
-      if (textarea.clientWidth === width) return;
-      width = textarea.clientWidth;
-      resize();
-    });
-
-    resize();
-    observer.observe(textarea);
-    return () => observer.disconnect();
-  }, [active, value]);
-
-  return ref;
-}
-
-function TextReadView({ format, content }: { format: ReturnType<typeof canonicalFormat>; content: string }) {
-  if (format === "md") {
-    return (
-      <Suspense fallback={<p className="text-[13px] text-muted-foreground">正在排版…</p>}>
-        <MarkdownPreview content={content} />
-      </Suspense>
-    );
-  }
-  if (format === "json" || format === "yaml") {
-    return (
-      <Suspense fallback={<p className="text-[13px] text-muted-foreground">正在解析结构…</p>}>
-        <StructuredDataView format={format} content={content} />
-      </Suspense>
-    );
-  }
-  if (format === "csv") {
-    const rows = parseCsv(content);
-    if (rows && rows.length > 0) {
-      const header = rows[0];
-      const dataRowCount = rows.length - 1;
-      const visibleRows = rows.slice(1, 1_001);
-      return (
-        <>
-          <div className="max-h-[60vh] w-full max-w-full overflow-auto rounded-lg border border-border bg-card/40">
-            <table className="min-w-full border-separate border-spacing-0 text-[13px]">
-              <thead>
-                <tr>
-                  {header.map((cell, cellIndex) => (
-                    <th
-                      key={cellIndex}
-                      scope="col"
-                      className="sticky top-0 z-10 min-w-28 max-w-[32rem] border-r border-b border-border bg-muted/95 px-3 py-2 text-left font-medium text-foreground last:border-r-0"
-                    >
-                      {cell}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((row, rowIndex) => (
-                  <tr key={rowIndex} className="odd:bg-background even:bg-muted/20 hover:bg-primary/[0.04]">
-                    {row.map((cell, cellIndex) => (
-                      <td key={cellIndex} className="min-w-28 max-w-[32rem] whitespace-pre-wrap break-words border-r border-b border-border px-3 py-1.5 align-top last:border-r-0">
-                        {cell}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {dataRowCount > visibleRows.length && (
-            <p className="mt-2 font-mono text-[11px] text-muted-foreground">
-              显示前 {visibleRows.length.toLocaleString()} 行，共 {dataRowCount.toLocaleString()} 行
-            </p>
-          )}
-        </>
-      );
-    }
-    if (rows === null) {
-      return (
-        <>
-          <p className="mb-2 text-[12px] text-muted-foreground">CSV 无法解析，显示原文</p>
-          <pre className="w-full min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[13px] leading-6 text-foreground/90">{content}</pre>
-        </>
-      );
-    }
-  }
-  return (
-    <pre className="w-full min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[13px] leading-6 text-foreground/90">
-      {content}
-    </pre>
-  );
-}
 
 function FileIdentity({ item }: { item: Item }) {
   const switchable = isSwitchableText(item.storedPath || item.title);
@@ -431,7 +332,6 @@ function TextFileEditor({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<TextFileSaveState>("idle");
-  const textareaRef = useAutosizeTextarea(content, noteMode === "edit" && !item.deletedAt);
   const version = useRef("");
   const encoding = useRef<TextFileEncoding>("utf8");
   const lineEnding = useRef<TextFileLineEnding>("lf");
@@ -442,7 +342,8 @@ function TextFileEditor({
   const draftWarningShown = useRef(false);
   const draftWriter = useRef<ReturnType<typeof createSerialTextFileDraftWriter> | null>(null);
   const saver = useRef<ReturnType<typeof createSerialNoteSaver> | null>(null);
-  const format = canonicalFormat(fileExtension(item.storedPath || item.title));
+  const snapshotter = useRef<ReturnType<typeof createTextSnapshotScheduler> | null>(null);
+  const updateContentRef = useRef<(content: string) => void>(() => undefined);
   const mode = item.deletedAt ? "read" : noteMode;
 
   const warnDraftFailure = () => {
@@ -457,6 +358,7 @@ function TextFileEditor({
 
   if (!saver.current) {
     saver.current = createSerialNoteSaver({
+      delay: 0,
       save: async (draft) => {
         if (mounted.current) setSaveState("saving");
         saveError.current = "";
@@ -497,7 +399,9 @@ function TextFileEditor({
           latestDraft.current = rebased;
           draftWriter.current?.schedule(rebased);
         }
-        if (mounted.current) setSaveState(latestDraft.current ? "dirty" : "saved");
+        if (mounted.current) {
+          setSaveState(latestDraft.current || snapshotter.current?.pending() ? "dirty" : "saved");
+        }
       },
       onFailed: () => {
         if (!mounted.current) return;
@@ -517,6 +421,7 @@ function TextFileEditor({
 
   useEffect(() => {
     let alive = true;
+    snapshotter.current?.cancel();
     setLoading(true);
     setLoadError(null);
     void (async () => {
@@ -536,7 +441,9 @@ function TextFileEditor({
           encoding.current = storedDraft.encoding;
           lineEnding.current = storedDraft.lineEnding;
           setContent(storedDraft.content);
-          if (!item.deletedAt) setNoteMode("edit");
+          if (!item.deletedAt && !isLargeTextFile(item.size, storedDraft.content.length)) {
+            setNoteMode("edit");
+          }
           setSaveState("dirty");
           toast.info("已恢复未保存的文件内容");
           if (!item.deletedAt) scheduleSave(storedDraft);
@@ -546,7 +453,9 @@ function TextFileEditor({
           encoding.current = storedDraft.encoding;
           lineEnding.current = storedDraft.lineEnding;
           setContent(storedDraft.content);
-          if (!item.deletedAt) setNoteMode("edit");
+          if (!item.deletedAt && !isLargeTextFile(item.size, storedDraft.content.length)) {
+            setNoteMode("edit");
+          }
           setSaveState("conflict");
         } else {
           latestDraft.current = null;
@@ -570,6 +479,7 @@ function TextFileEditor({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      snapshotter.current?.flush();
       void saver.current?.flush();
       void draftWriter.current?.flush();
     };
@@ -577,6 +487,7 @@ function TextFileEditor({
 
   useEffect(() => {
     const flush = (event: Event) => {
+      snapshotter.current?.flush();
       const saving = saver.current?.flush() ?? Promise.resolve();
       const drafting = draftWriter.current?.flush() ?? Promise.resolve();
       (event as CustomEvent<Promise<void>[]>).detail.push(
@@ -595,25 +506,41 @@ function TextFileEditor({
       encoding: encoding.current,
       lineEnding: lineEnding.current,
     };
-    setContent(nextContent);
     latestDraft.current = draft;
     draftWriter.current?.schedule(draft);
-    setSaveState(conflictVersion.current ? "conflict" : "dirty");
+    if (mounted.current) setSaveState(conflictVersion.current ? "conflict" : "dirty");
     if (!conflictVersion.current) scheduleSave(draft);
+  };
+  updateContentRef.current = updateContent;
+
+  if (!snapshotter.current) {
+    snapshotter.current = createTextSnapshotScheduler((nextContent) => {
+      updateContentRef.current(nextContent);
+    });
+  }
+
+  const stageSnapshot = (snapshot: () => string) => {
+    snapshotter.current?.schedule(snapshot);
+    setSaveState(conflictVersion.current ? "conflict" : "dirty");
   };
 
   const changeMode = (nextMode: "read" | "edit") => {
     setNoteMode(nextMode);
-    if (nextMode === "read") void saver.current?.flush();
+    if (nextMode === "read") {
+      snapshotter.current?.flush();
+      void saver.current?.flush();
+    }
   };
 
   const retrySave = () => {
+    snapshotter.current?.flush();
     if (!latestDraft.current || conflictVersion.current) return;
     scheduleSave(latestDraft.current);
     void saver.current?.flush();
   };
 
   const reload = async () => {
+    snapshotter.current?.cancel();
     setLoading(true);
     try {
       const document = await ipc.readTextFile(item.id);
@@ -634,6 +561,7 @@ function TextFileEditor({
   };
 
   const overwrite = () => {
+    snapshotter.current?.flush();
     const draft = latestDraft.current;
     const currentVersion = conflictVersion.current;
     if (!draft || !currentVersion || item.deletedAt) return;
@@ -709,21 +637,17 @@ function TextFileEditor({
           </div>
         )}
 
-        {mode === "edit" && !item.deletedAt ? (
-          <Textarea
-            ref={textareaRef}
-            autoFocus
-            value={content}
-            onChange={(event) => updateContent(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") changeMode("read");
+        <Suspense fallback={<p className="py-12 text-center font-mono text-[11px] text-muted-foreground">正在载入编辑器…</p>}>
+          <TextEditor
+            initialContent={content}
+            readOnly={mode === "read" || Boolean(item.deletedAt)}
+            ariaLabel={`${mode === "read" ? "阅读" : "编辑"} ${item.title}`}
+            onDocumentChange={stageSnapshot}
+            onEscape={() => {
+              if (mode === "edit") changeMode("read");
             }}
-            className="min-h-[360px] -mx-1 grow shrink-0 basis-auto resize-none overflow-hidden rounded-none border-none p-1 font-mono text-[13px] leading-6 shadow-none focus-visible:border-transparent focus-visible:bg-muted/20 focus-visible:ring-0"
-            aria-label={`编辑 ${item.title}`}
           />
-        ) : (
-          <TextReadView format={format} content={content} />
-        )}
+        </Suspense>
       </div>
     </>
   );
@@ -797,11 +721,13 @@ function FilePreview({
 }
 
 export function DetailPane() {
-  const { detail, detailLoading, toggleFavorite } = useLibrary();
-  const { listCollapsed, toggleListCollapsed } = useUi();
+  const item = useLibrary((state) => state.detail?.item);
+  const detailLoading = useLibrary((state) => state.detailLoading);
+  const toggleFavorite = useLibrary((state) => state.toggleFavorite);
+  const listCollapsed = useUi((state) => state.listCollapsed);
+  const toggleListCollapsed = useUi((state) => state.toggleListCollapsed);
   const headerRef = useRef<HTMLDivElement | null>(null);
   useTitlebarDrag(headerRef);
-  const item = detail?.item;
   const [fileHeaderActions, setFileHeaderActions] = useState<HTMLDivElement | null>(null);
 
   const exportItem = async () => {
@@ -942,7 +868,16 @@ export function DetailPane() {
           type="scroll"
           className="min-h-0 flex-1 [&_[data-slot=scroll-area-scrollbar]]:w-1.5 [&_[data-slot=scroll-area-scrollbar]]:py-3 [&_[data-slot=scroll-area-thumb]]:bg-muted-foreground/45 [&_[data-slot=scroll-area-viewport]>div]:!block"
         >
-          <div className="flex min-h-full w-full min-w-0 max-w-full flex-col px-6 py-5">
+          <div
+            className={cn(
+              "flex min-h-full w-full min-w-0 max-w-full flex-col px-6 pt-5",
+              item.itemType === "file"
+                && isSwitchableText(item.storedPath || item.title)
+                && !isTrashed
+                ? "pb-0"
+                : "pb-5",
+            )}
+          >
           {item.itemType === "file" ? (
             <>
               <FileIdentity item={item} />

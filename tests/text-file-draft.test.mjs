@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   classifyTextFileDraft,
   createSerialTextFileDraftWriter,
+  createTextSnapshotScheduler,
 } from "../src/lib/text-file-draft.ts";
 
 const document = { content: "disk", version: "v1" };
@@ -39,4 +40,33 @@ test("text file draft writes never overlap and keep only the newest queued draft
   assert.deepEqual(calls, ["one", "three"]);
   pending.shift()();
   await flushing;
+});
+
+test("text snapshots stay lazy, coalesce, flush, and cancel", async () => {
+  const reads = [];
+  const commits = [];
+  const scheduler = createTextSnapshotScheduler((content) => commits.push(content), 5);
+
+  scheduler.schedule(() => {
+    reads.push("old");
+    return "old";
+  });
+  scheduler.schedule(() => {
+    reads.push("new");
+    return "new";
+  });
+  assert.equal(scheduler.pending(), true);
+  assert.deepEqual(reads, []);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(reads, ["new"]);
+  assert.deepEqual(commits, ["new"]);
+
+  scheduler.schedule(() => "flush");
+  scheduler.flush();
+  assert.deepEqual(commits, ["new", "flush"]);
+  scheduler.schedule(() => "cancelled");
+  scheduler.cancel();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(scheduler.pending(), false);
+  assert.deepEqual(commits, ["new", "flush"]);
 });

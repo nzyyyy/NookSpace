@@ -12,6 +12,8 @@ export interface TextFileDraft {
   lineEnding: TextFileLineEnding;
 }
 
+export type TextSnapshot = () => string;
+
 export type TextFileDraftDecision = "none" | "discard" | "recover" | "conflict";
 
 const DATABASE = "nookspace-drafts";
@@ -137,6 +139,39 @@ export function createSerialTextFileDraftWriter(
     },
     flush() {
       return start();
+    },
+  };
+}
+
+export function createTextSnapshotScheduler(
+  commit: (content: string) => void,
+  delay = 400,
+) {
+  let latest: TextSnapshot | null = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const flush = () => {
+    clearTimeout(timer);
+    timer = undefined;
+    const snapshot = latest;
+    latest = null;
+    if (snapshot) commit(snapshot());
+  };
+
+  return {
+    schedule(snapshot: TextSnapshot) {
+      latest = snapshot;
+      clearTimeout(timer);
+      timer = setTimeout(flush, delay);
+    },
+    flush,
+    cancel() {
+      clearTimeout(timer);
+      timer = undefined;
+      latest = null;
+    },
+    pending() {
+      return latest !== null;
     },
   };
 }

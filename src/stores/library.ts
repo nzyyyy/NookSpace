@@ -14,7 +14,7 @@ import {
   type TagColor,
 } from "@/core/ipc";
 import { collectionSubtreeIds } from "@/lib/collections";
-import { isSwitchableText } from "@/lib/file-types";
+import { isLargeTextFile, isSwitchableText } from "@/lib/file-types";
 
 export type View =
   | { kind: "all" }
@@ -312,7 +312,10 @@ export const useLibrary = create<LibraryState>((set, get) => {
       set({
         detail: detail ?? EMPTY_DETAIL,
         detailLoading: false,
-        noteMode: isSwitchableText(detail?.item.storedPath || detail?.item.title || "") ? "edit" : "read",
+        noteMode: isSwitchableText(detail?.item.storedPath || detail?.item.title || "")
+          && !isLargeTextFile(detail?.item.size ?? 0)
+          ? "edit"
+          : "read",
       });
     },
 

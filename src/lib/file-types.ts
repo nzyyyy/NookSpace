@@ -6,6 +6,11 @@ const MEDIA_EXTENSIONS = new Set([
 
 export const SWITCHABLE_FORMATS = ["md", "txt", "json", "yaml", "csv"] as const;
 export type SwitchableFormat = (typeof SWITCHABLE_FORMATS)[number];
+export const LARGE_TEXT_FILE_THRESHOLD = 256 * 1024;
+
+export function isLargeTextFile(size: number, contentLength = 0): boolean {
+  return Math.max(size, contentLength) >= LARGE_TEXT_FILE_THRESHOLD;
+}
 
 export function isMediaFile(mime: string, name: string): boolean {
   const extension = fileExtension(name);
