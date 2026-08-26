@@ -35,7 +35,7 @@ import {
   isSwitchableText,
   SWITCHABLE_FORMATS,
 } from "@/lib/file-types";
-import { parseCsv, prettyJson } from "@/lib/text-views";
+import { parseCsv } from "@/lib/text-views";
 import { useLibrary } from "@/stores/library";
 import { useUi } from "@/stores/ui";
 import { cn } from "@/lib/utils";
@@ -75,6 +75,7 @@ import {
 
 const MarkdownPreview = lazy(() => import("./MarkdownPreview"));
 const PdfPreview = lazy(() => import("@/components/PdfPreview"));
+const StructuredDataView = lazy(() => import("./StructuredDataView"));
 
 function EmptyDetail() {
   return (
@@ -274,38 +275,63 @@ function TextReadView({ format, content }: { format: ReturnType<typeof canonical
       </Suspense>
     );
   }
-  if (format === "json") {
-    const pretty = prettyJson(content);
+  if (format === "json" || format === "yaml") {
     return (
-      <>
-        {!pretty.ok && (
-          <p className="mb-2 text-[12px] text-muted-foreground">JSON 无法解析，显示原文</p>
-        )}
-        <pre className="w-full min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[13px] leading-6 text-foreground/90">
-          {pretty.text}
-        </pre>
-      </>
+      <Suspense fallback={<p className="text-[13px] text-muted-foreground">正在解析结构…</p>}>
+        <StructuredDataView format={format} content={content} />
+      </Suspense>
     );
   }
   if (format === "csv") {
     const rows = parseCsv(content);
     if (rows && rows.length > 0) {
+      const header = rows[0];
+      const dataRowCount = rows.length - 1;
+      const visibleRows = rows.slice(1, 1_001);
       return (
-        <div className="w-full max-w-full overflow-x-auto">
-          <table className="w-full border-collapse text-[13px]">
-            <tbody>
-              {rows.map((row, rowIndex) => (
-                <tr key={rowIndex}>
-                  {row.map((cell, cellIndex) => (
-                    <td key={cellIndex} className="border border-border px-2 py-1 align-top">
+        <>
+          <div className="max-h-[60vh] w-full max-w-full overflow-auto rounded-lg border border-border bg-card/40">
+            <table className="min-w-full border-separate border-spacing-0 text-[13px]">
+              <thead>
+                <tr>
+                  {header.map((cell, cellIndex) => (
+                    <th
+                      key={cellIndex}
+                      scope="col"
+                      className="sticky top-0 z-10 min-w-28 max-w-[32rem] border-r border-b border-border bg-muted/95 px-3 py-2 text-left font-medium text-foreground last:border-r-0"
+                    >
                       {cell}
-                    </td>
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {visibleRows.map((row, rowIndex) => (
+                  <tr key={rowIndex} className="odd:bg-background even:bg-muted/20 hover:bg-primary/[0.04]">
+                    {row.map((cell, cellIndex) => (
+                      <td key={cellIndex} className="min-w-28 max-w-[32rem] whitespace-pre-wrap break-words border-r border-b border-border px-3 py-1.5 align-top last:border-r-0">
+                        {cell}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {dataRowCount > visibleRows.length && (
+            <p className="mt-2 font-mono text-[11px] text-muted-foreground">
+              显示前 {visibleRows.length.toLocaleString()} 行，共 {dataRowCount.toLocaleString()} 行
+            </p>
+          )}
+        </>
+      );
+    }
+    if (rows === null) {
+      return (
+        <>
+          <p className="mb-2 text-[12px] text-muted-foreground">CSV 无法解析，显示原文</p>
+          <pre className="w-full min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[13px] leading-6 text-foreground/90">{content}</pre>
+        </>
       );
     }
   }

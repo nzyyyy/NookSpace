@@ -1,15 +1,41 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { prettyJson, parseCsv } from "../src/lib/text-views.ts";
+import { parseCsv } from "../src/lib/text-views.ts";
+import { parseStructuredDocuments } from "../src/lib/structured-data.ts";
 import { canonicalFormat, displayStem, isSwitchableText } from "../src/lib/file-types.ts";
 
-test("pretty json formats valid input and keeps invalid text", () => {
-  assert.deepEqual(prettyJson('{"a":1}'), { ok: true, text: '{\n  "a": 1\n}' });
-  assert.deepEqual(prettyJson("{nope"), { ok: false, text: "{nope" });
+test("structured json parses values and limits oversized trees", () => {
+  assert.deepEqual(parseStructuredDocuments("json", '{"a":[1,true,null]}'), {
+    ok: true,
+    documents: [{ a: [1, true, null] }],
+  });
+  assert.equal(parseStructuredDocuments("json", "{nope").ok, false);
+  assert.equal(parseStructuredDocuments("json", JSON.stringify(Array(9_999).fill(null))).ok, true);
+  assert.deepEqual(
+    parseStructuredDocuments("json", JSON.stringify(Array(10_000).fill(null))),
+    { ok: false, reason: "tooLarge", message: "结构超过 10,000 个节点" },
+  );
+});
+
+test("structured yaml parses nested and multiple documents", () => {
+  assert.deepEqual(parseStructuredDocuments("yaml", "name: Nook\nitems:\n  - 1\n  - true\n---\nnull\n"), {
+    ok: true,
+    documents: [{ name: "Nook", items: [1, true] }, null],
+  });
+  assert.equal(parseStructuredDocuments("yaml", "items: [1").ok, false);
+  assert.deepEqual(parseStructuredDocuments("yaml", "self: &self [*self]\n"), {
+    ok: false,
+    reason: "invalid",
+    message: "循环别名无法展示",
+  });
 });
 
 test("csv parser splits quoted fields and rejects unclosed quotes", () => {
-  assert.deepEqual(parseCsv('a,b\n1,"x,y"'), [["a", "b"], ["1", "x,y"]]);
+  assert.deepEqual(parseCsv('\uFEFFa,b\r\n1,"x,y"\r\n2,"x""y\nline"\r\n'), [
+    ["a", "b"],
+    ["1", "x,y"],
+    ["2", 'x"y\nline'],
+  ]);
   assert.equal(parseCsv('"unclosed'), null);
   assert.deepEqual(parseCsv(""), []);
 });

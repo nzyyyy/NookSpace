@@ -1,11 +1,3 @@
-export function prettyJson(content: string): { ok: true; text: string } | { ok: false; text: string } {
-  try {
-    return { ok: true, text: JSON.stringify(JSON.parse(content), null, 2) };
-  } catch {
-    return { ok: false, text: content };
-  }
-}
-
 export function parseCsv(content: string): string[][] | null {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -44,7 +36,9 @@ export function parseCsv(content: string): string[][] | null {
     }
   }
   if (quoted) return null;
-  row.push(field);
-  rows.push(row);
+  if (row.length > 0 || field || !input.endsWith("\n")) {
+    row.push(field);
+    rows.push(row);
+  }
   return rows;
 }

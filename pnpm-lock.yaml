@@ -19,7 +19,7 @@ importers:
         version: 5.3.0
       '@tailwindcss/vite':
         specifier: ^4.3.3
-        version: 4.3.3(vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0))
+        version: 4.3.3(vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0))
       '@tauri-apps/api':
         specifier: ^2
         version: 2.11.1
@@ -83,6 +83,9 @@ importers:
       tw-animate-css:
         specifier: ^1.4.0
         version: 1.4.0
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
       zustand:
         specifier: ^5.0.15
         version: 5.0.15(@types/react@19.2.18)(react@19.2.8)
@@ -101,13 +104,13 @@ importers:
         version: 19.2.4(@types/react@19.2.18)
       '@vitejs/plugin-react':
         specifier: ^4.6.0
-        version: 4.6.0(vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0))
+        version: 4.6.0(vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0))
       typescript:
         specifier: ~5.8.3
         version: 5.8.3
       vite:
         specifier: ^7.0.4
-        version: 7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)
+        version: 7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0)
 
 packages:
 
@@ -3342,6 +3345,11 @@ packages:
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
+  yaml@2.9.0:
+    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
   yocto-spinner@1.2.2:
     resolution: {integrity: sha512-DODGl1wJjA/s5pnJFKau9lIYHT81lnhob1i3e1TjxZRxEhWRKl74nTbWE6H5KlkViQQTo/Z29YFdxzTZAMY3ng==}
     engines: {node: '>=18.19'}
@@ -4710,12 +4718,12 @@ snapshots:
       '@tailwindcss/oxide-win32-arm64-msvc': 4.3.3
       '@tailwindcss/oxide-win32-x64-msvc': 4.3.3
 
-  '@tailwindcss/vite@4.3.3(vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0))':
+  '@tailwindcss/vite@4.3.3(vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0))':
     dependencies:
       '@tailwindcss/node': 4.3.3
       '@tailwindcss/oxide': 4.3.3
       tailwindcss: 4.3.3
-      vite: 7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)
+      vite: 7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0)
 
   '@tauri-apps/api@2.11.1': {}
 
@@ -4841,7 +4849,7 @@ snapshots:
 
   '@ungap/structured-clone@1.3.3': {}
 
-  '@vitejs/plugin-react@4.6.0(vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0))':
+  '@vitejs/plugin-react@4.6.0(vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0))':
     dependencies:
       '@babel/core': 7.29.7
       '@babel/plugin-transform-react-jsx-self': 7.29.7(@babel/core@7.29.7)
@@ -4849,7 +4857,7 @@ snapshots:
       '@rolldown/pluginutils': 1.0.0-beta.19
       '@types/babel__core': 7.20.5
       react-refresh: 0.17.0
-      vite: 7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)
+      vite: 7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -6731,7 +6739,7 @@ snapshots:
       '@types/unist': 3.0.3
       vfile-message: 4.0.3
 
-  vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0):
+  vite@7.3.6(@types/node@26.2.0)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0):
     dependencies:
       esbuild: 0.28.2
       fdir: 6.5.0(picomatch@4.0.5)
@@ -6744,6 +6752,7 @@ snapshots:
       fsevents: 2.3.3
       jiti: 2.7.0
       lightningcss: 1.32.0
+      yaml: 2.9.0
 
   warning@4.0.3:
     dependencies:
@@ -6765,6 +6774,8 @@ snapshots:
       powershell-utils: 0.1.0
 
   yallist@3.1.1: {}
+
+  yaml@2.9.0: {}
 
   yocto-spinner@1.2.2:
     dependencies:
