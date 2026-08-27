@@ -17,6 +17,8 @@ pub struct Collection {
     pub parent_id: Option<String>,
     pub position: i64,
     pub created_at: String,
+    pub is_locked: bool,
+    pub effective_locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,6 +37,8 @@ pub struct Item {
     pub last_opened_at: String,
     pub is_favorite: bool,
     pub deleted_at: Option<String>,
+    pub is_locked: bool,
+    pub effective_locked: bool,
     pub tags: Vec<Tag>,
     pub collections: Vec<String>,
 }
@@ -55,6 +59,8 @@ pub struct ItemSummary {
     pub last_opened_at: String,
     pub is_favorite: bool,
     pub deleted_at: Option<String>,
+    pub is_locked: bool,
+    pub effective_locked: bool,
     pub tags: Vec<Tag>,
     pub collections: Vec<String>,
 }
@@ -75,6 +81,8 @@ impl From<Item> for ItemSummary {
             last_opened_at: item.last_opened_at,
             is_favorite: item.is_favorite,
             deleted_at: item.deleted_at,
+            is_locked: item.is_locked,
+            effective_locked: item.effective_locked,
             tags: item.tags,
             collections: item.collections,
         }
@@ -196,6 +204,13 @@ pub struct TextFileDocument {
 pub enum TextFileWriteResult {
     Saved { item: Item, version: String },
     Conflict { version: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LockSession {
+    pub unlocked: bool,
+    pub remaining_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -29,3 +29,9 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 hex = "0.4"
 pdf-extract = "0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSError", "NSString"] }
+objc2-local-authentication = { version = "0.3", features = ["block2", "LAContext", "LAPublicDefines"] }

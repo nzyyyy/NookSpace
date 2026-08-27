@@ -115,6 +115,10 @@ pub(super) fn plain_snippet(sources: &[&str], terms: &[String]) -> Option<String
 
 impl Library {
     pub(crate) fn index_pdf_item(&self, id: &str, path: &Path) -> Result<bool, String> {
+        {
+            let conn = self.db.lock().unwrap();
+            self.require_item_access(&conn, id)?;
+        }
         let extracted = pdf_extract::extract_text(path);
         let (text, error) = match extracted {
             Ok(text) => (text, None),
@@ -159,10 +163,16 @@ impl Library {
             };
             let mut stmt = conn.prepare(sql).map_err(|error| error.to_string())?;
             let rows = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
                 .map_err(|error| error.to_string())?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(|error| error.to_string())?
+            let rows = rows
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            let ids = rows.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+            self.require_items_access(&conn, &ids)?;
+            rows
         };
 
         let mut result = IndexResult {

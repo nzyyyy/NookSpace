@@ -16,6 +16,8 @@ import {
   ListPlus,
   LayoutGrid,
   Music,
+  Lock,
+  LockOpen,
   PanelLeftClose,
   Plus,
   Star,
@@ -61,6 +63,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 
 function viewTitle(
   view: View,
@@ -89,6 +98,8 @@ function viewTitle(
 }
 
 function TypeIcon({ item, className }: { item: ItemSummary; className?: string }) {
+  const unlocked = useLibrary((state) => state.lockSession.unlocked);
+  if (item.effectiveLocked && !unlocked) return <Lock className={className} />;
   if (item.itemType === "link") return <Link2 className={className} />;
   if (canonicalFormat(fileExtension(item.storedPath || item.title)) === "md") {
     return <FileText className={className} />;
@@ -103,7 +114,8 @@ function extOf(item: ItemSummary): string {
   return fileExtension(item.storedPath || item.title).toUpperCase();
 }
 
-function metaLine(item: ItemSummary): string {
+function metaLine(item: ItemSummary, concealed = false): string {
+  if (concealed) return "已锁定";
   const rel = formatRelativeDate(item.updatedAt);
   if (item.itemType === "file") {
     const ext = extOf(item);
@@ -142,6 +154,7 @@ function ItemRow({
   snippet?: string;
   terms: string[];
 }) {
+  const concealed = item.effectiveLocked && !useLibrary((state) => state.lockSession.unlocked);
   return (
     <div
       role="button"
@@ -161,6 +174,7 @@ function ItemRow({
           <Highlight text={displayStem(item.title, item.storedPath) || "无标题"} terms={terms} />
         </span>
         <button
+          disabled={concealed}
           tabIndex={-1}
           className={cn(
             "opacity-0 transition-opacity group-hover:opacity-100",
@@ -181,7 +195,7 @@ function ItemRow({
         </button>
       </div>
       <div className="font-mono text-[11px] tracking-tight text-muted-foreground">
-        {metaLine(item)}
+        {metaLine(item, concealed)}
       </div>
       {snippet && (
         <div className="line-clamp-2 text-[11.5px] leading-4 text-muted-foreground">
@@ -224,8 +238,13 @@ function ItemCard({
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [thumbnail, setThumbnail] = useState<string | null>(null);
+  const concealed = item.effectiveLocked && !useLibrary((state) => state.lockSession.unlocked);
 
   useEffect(() => {
+    if (concealed) {
+      setThumbnail(null);
+      return;
+    }
     if (item.itemType !== "file" || isMediaFile(item.mime, item.storedPath || item.title) || !ref.current) return;
     const observer = new IntersectionObserver(([entry]) => {
       if (!entry.isIntersecting) return;
@@ -234,7 +253,7 @@ function ItemCard({
     }, { rootMargin: "120px" });
     observer.observe(ref.current);
     return () => observer.disconnect();
-  }, [item.id, item.itemType]);
+  }, [concealed, item.id, item.itemType, item.mime, item.storedPath, item.title]);
 
   let secondary = "";
   if (snippet) secondary = snippet;
@@ -242,7 +261,7 @@ function ItemCard({
     secondary = item.contentPreview.replace(/\s+/g, " ").trim();
   } else if (item.itemType === "link") {
     try { secondary = new URL(item.url).hostname; } catch { secondary = item.url; }
-  } else secondary = metaLine(item);
+  } else secondary = metaLine(item, concealed);
 
   return (
     <div
@@ -257,7 +276,9 @@ function ItemCard({
       )}
     >
       <div className="flex h-28 items-center justify-center overflow-hidden bg-muted/50">
-        {thumbnail ? (
+        {concealed ? (
+          <Lock className="size-8 text-muted-foreground/50" />
+        ) : thumbnail ? (
           <img src={thumbnail} alt="" className="size-full object-cover" draggable={false} />
         ) : item.itemType === "file" && item.contentPreview.trim() ? (
           <p className="line-clamp-4 px-4 text-[12px] leading-5 text-muted-foreground">{secondary}</p>
@@ -282,6 +303,30 @@ function ItemCard({
         ) : null}
       </div>
     </div>
+  );
+}
+
+function ItemLockMenu({ item, children }: { item: ItemSummary; children: React.ReactNode }) {
+  const { lockSession, setItemsLocked, unlockProtectedContent } = useLibrary();
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuContent className="min-w-44">
+        {item.effectiveLocked && !lockSession.unlocked ? (
+          <ContextMenuItem onSelect={() => void unlockProtectedContent()}>
+            <LockOpen className="size-3.5" /> 解锁 5 分钟
+          </ContextMenuItem>
+        ) : null}
+        {item.effectiveLocked && !lockSession.unlocked ? <ContextMenuSeparator /> : null}
+        <ContextMenuItem onSelect={() => void setItemsLocked([item.id], !item.isLocked)}>
+          {item.isLocked ? <LockOpen className="size-3.5" /> : <Lock className="size-3.5" />}
+          {item.isLocked ? "取消锁定" : "锁定"}
+        </ContextMenuItem>
+        {!item.isLocked && item.effectiveLocked ? (
+          <ContextMenuItem disabled>由所属集合锁定</ContextMenuItem>
+        ) : null}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -437,10 +482,16 @@ export function ItemList() {
     emptyTrash,
     setItemTags,
     createSavedView,
+    setItemsLocked,
+    lockSession,
+    unlockProtectedContent,
   } = useLibrary();
 
   const title = viewTitle(view, collections, tags, savedViews);
   const isTrash = view.kind === "trash";
+  const collectionLocked = view.kind === "collection"
+    && !lockSession.unlocked
+    && collections.some((collection) => collection.id === view.id && collection.effectiveLocked);
   const batch = multiIds;
   const batchSet = useMemo(() => new Set(batch), [batch]);
 
@@ -530,6 +581,17 @@ export function ItemList() {
                 </PopoverContent>
               </Popover>
 
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void setItemsLocked(batch, !batch.every((id) => items.find((item) => item.id === id)?.isLocked))}
+              >
+                {batch.every((id) => items.find((item) => item.id === id)?.isLocked)
+                  ? <LockOpen className="size-3.5" />
+                  : <Lock className="size-3.5" />}
+                {batch.every((id) => items.find((item) => item.id === id)?.isLocked) ? "取消锁定" : "锁定"}
+              </Button>
+
               {isTrash ? (
                 <>
                   <Button
@@ -569,7 +631,7 @@ export function ItemList() {
             <h1 className="min-w-0 truncate text-[15px] font-medium tracking-tight">{title}</h1>
             <span className="font-mono text-[11px] text-muted-foreground">{items.length}</span>
             <div data-pane-spacer className="flex-1" />
-            {!isTrash && (
+            {!isTrash && !collectionLocked && (
               <CreateMenu />
             )}
             {isTrash && (
@@ -595,7 +657,8 @@ export function ItemList() {
             id="list-search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索标题、内容、文件名…"
+            placeholder={collectionLocked ? "集合已锁定" : "搜索标题、内容、文件名…"}
+            disabled={collectionLocked}
             className="h-7 min-w-0 flex-1 text-[13px]"
           />
         )}
@@ -627,30 +690,45 @@ export function ItemList() {
             <Skeleton className="h-9 w-full" />
             <Skeleton className="h-9 w-4/5" />
           </div>
+        ) : collectionLocked ? (
+          <div className="flex min-h-full flex-col items-center justify-center gap-4 px-10 py-16 text-center">
+            <div className="flex size-12 items-center justify-center rounded-full bg-muted">
+              <Lock className="size-5 text-muted-foreground" />
+            </div>
+            <div>
+              <p className="font-display text-[24px] font-medium tracking-tight text-foreground/90 italic">
+                这个集合已锁定。
+              </p>
+              <p className="mt-2 font-mono text-[12px] tracking-wide text-muted-foreground">
+                使用 Touch ID 或系统密码解锁 5 分钟
+              </p>
+            </div>
+            <Button onClick={() => void unlockProtectedContent()}>
+              <LockOpen className="size-4" /> 解锁 5 分钟
+            </Button>
+          </div>
         ) : items.length === 0 && !isTrash && !query ? (
           <EmptyState view={view} />
         ) : (
           <div className={cn(listLayout === "grid" ? "grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2 p-3" : "flex flex-col gap-px p-2")}>
-            {items.map((item) => listLayout === "grid" ? (
-              <ItemCard
-                key={item.id}
+            {items.map((item) => (
+              <ItemLockMenu key={item.id} item={item}>
+                {listLayout === "grid" ? <ItemCard
                 item={item}
                 selected={selectedId === item.id}
                 multi={batchSet.has(item.id)}
                 onActivate={handleActivate(item.id)}
                 snippet={snippets[item.id]?.text}
                 terms={snippets[item.id]?.terms ?? []}
-              />
-            ) : (
-              <ItemRow
-                key={item.id}
+              /> : <ItemRow
                 item={item}
                 selected={selectedId === item.id}
                 multi={batchSet.has(item.id)}
                 onActivate={handleActivate(item.id)}
                 snippet={snippets[item.id]?.text}
                 terms={snippets[item.id]?.terms ?? []}
-              />
+              />}
+              </ItemLockMenu>
             ))}
             {items.length === 0 && (
               <div className="px-4 py-10 text-center">

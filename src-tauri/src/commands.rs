@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use tauri::{AppHandle, State};
 
+use crate::auth;
 use crate::library::models::*;
 use crate::library::Library;
 
@@ -16,6 +17,58 @@ where
     tauri::async_runtime::spawn_blocking(move || f(&lib))
         .await
         .map_err(|e| format!("task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_lock_session(state: State<'_, Library>) -> Result<LockSession, String> {
+    let lib = state.inner().clone();
+    blocking(lib, |library| Ok(library.lock_session())).await
+}
+
+#[tauri::command]
+pub async fn unlock_protected_content(state: State<'_, Library>) -> Result<LockSession, String> {
+    let lib = state.inner().clone();
+    blocking(lib, |library| {
+        if auth::authenticate()? {
+            Ok(library.unlock_for_session())
+        } else {
+            Ok(library.lock_session())
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn lock_now(state: State<'_, Library>) -> Result<(), String> {
+    let lib = state.inner().clone();
+    blocking(lib, |library| {
+        library.lock_now();
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_items_locked(
+    state: State<'_, Library>,
+    ids: Vec<String>,
+    locked: bool,
+) -> Result<(), String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |library| library.set_items_locked(&ids, locked)).await
+}
+
+#[tauri::command]
+pub async fn set_collection_locked(
+    state: State<'_, Library>,
+    id: String,
+    locked: bool,
+) -> Result<(), String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |library| {
+        library.set_collection_locked(&id, locked)
+    })
+    .await
 }
 
 #[tauri::command]

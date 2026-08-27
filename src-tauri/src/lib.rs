@@ -1,3 +1,4 @@
+mod auth;
 mod commands;
 mod library;
 
@@ -30,6 +31,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::get_lock_session,
+            commands::unlock_protected_content,
+            commands::lock_now,
+            commands::set_items_locked,
+            commands::set_collection_locked,
             commands::get_library_info,
             commands::list_items,
             commands::list_saved_views,

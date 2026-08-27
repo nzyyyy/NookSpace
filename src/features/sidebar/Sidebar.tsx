@@ -9,6 +9,8 @@ import {
   FolderPlus,
   Inbox,
   Laptop,
+  Lock,
+  LockOpen,
   Moon,
   Plus,
   Search,
@@ -261,8 +263,8 @@ function CollectionRows({
                           <span className="-ml-1 -mr-1 size-4 shrink-0" aria-hidden />
                         )
                       }
-                      icon={<Folder />}
-                      label={node.name}
+                      icon={node.effectiveLocked ? <Lock /> : <Folder />}
+                      label={<span title={!node.isLocked && node.effectiveLocked ? "由上级集合锁定" : undefined}>{node.name}</span>}
                     />
                   </div>
                 </div>
@@ -280,6 +282,19 @@ function CollectionRows({
               }}>下移</ContextMenuItem>
               <ContextMenuItem onSelect={() => onMove(node)}>移动到…</ContextMenuItem>
               <ContextMenuItem onSelect={() => onRename(node)}>重命名</ContextMenuItem>
+              <ContextMenuSeparator />
+              {node.effectiveLocked && !useLibrary.getState().lockSession.unlocked ? (
+                <ContextMenuItem onSelect={() => void useLibrary.getState().unlockProtectedContent()}>
+                  <LockOpen className="size-3.5" /> 解锁 5 分钟
+                </ContextMenuItem>
+              ) : null}
+              <ContextMenuItem onSelect={() => void useLibrary.getState().setCollectionLocked(node.id, !node.isLocked)}>
+                {node.isLocked ? <LockOpen className="size-3.5" /> : <Lock className="size-3.5" />}
+                {node.isLocked ? "取消锁定" : "锁定"}
+              </ContextMenuItem>
+              {!node.isLocked && node.effectiveLocked ? (
+                <ContextMenuItem disabled>由上级集合锁定</ContextMenuItem>
+              ) : null}
               <ContextMenuSeparator />
               <ContextMenuItem variant="destructive" onSelect={() => onDelete(node)}>删除集合</ContextMenuItem>
             </ContextMenuContent>

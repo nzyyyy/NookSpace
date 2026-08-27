@@ -18,6 +18,8 @@ export interface Collection {
   parentId: string | null;
   position: number;
   createdAt: string;
+  isLocked: boolean;
+  effectiveLocked: boolean;
 }
 
 export interface Item {
@@ -34,6 +36,8 @@ export interface Item {
   lastOpenedAt: string;
   isFavorite: boolean;
   deletedAt: string | null;
+  isLocked: boolean;
+  effectiveLocked: boolean;
   tags: Tag[];
   collections: string[];
 }
@@ -52,6 +56,8 @@ export interface ItemSummary {
   lastOpenedAt: string;
   isFavorite: boolean;
   deletedAt: string | null;
+  isLocked: boolean;
+  effectiveLocked: boolean;
   tags: Tag[];
   collections: string[];
 }
@@ -108,6 +114,11 @@ export interface LibraryInfo {
   linkCount: number;
 }
 
+export interface LockSession {
+  unlocked: boolean;
+  remainingMs: number;
+}
+
 export interface SavedView {
   id: string;
   name: string;
@@ -146,6 +157,19 @@ export type TextFileWriteResult =
 // ---- typed invoke wrappers (the single seam to Rust) ----
 
 export const ipc = {
+  getLockSession: () => invoke<LockSession>("get_lock_session"),
+
+  unlockProtectedContent: () =>
+    invoke<LockSession>("unlock_protected_content"),
+
+  lockNow: () => invoke<void>("lock_now"),
+
+  setItemsLocked: (ids: string[], locked: boolean) =>
+    invoke<void>("set_items_locked", { ids, locked }),
+
+  setCollectionLocked: (id: string, locked: boolean) =>
+    invoke<void>("set_collection_locked", { id, locked }),
+
   getLibraryInfo: () => invoke<LibraryInfo>("get_library_info"),
 
   listItems: (filters: ListFilters) =>

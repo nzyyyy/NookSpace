@@ -8,6 +8,7 @@ import {
   type ItemDetail,
   type ItemSummary,
   type LibraryInfo,
+  type LockSession,
   type SavedView,
   type SearchIndexStatus,
   type Tag,
@@ -15,6 +16,7 @@ import {
 } from "@/core/ipc";
 import { collectionSubtreeIds } from "@/lib/collections";
 import { isLargeTextFile, isSwitchableText } from "@/lib/file-types";
+import { toast } from "sonner";
 
 export type View =
   | { kind: "all" }
@@ -44,6 +46,8 @@ const EMPTY_DETAIL: ItemDetail = {
     lastOpenedAt: "",
     isFavorite: false,
     deletedAt: null,
+    isLocked: false,
+    effectiveLocked: false,
     tags: [],
     collections: [],
   },
@@ -64,6 +68,8 @@ const summaryOf = (item: Item): ItemSummary => ({
   lastOpenedAt: item.lastOpenedAt,
   isFavorite: item.isFavorite,
   deletedAt: item.deletedAt,
+  isLocked: item.isLocked,
+  effectiveLocked: item.effectiveLocked,
   tags: item.tags,
   collections: item.collections,
 });
@@ -88,6 +94,7 @@ interface LibraryState {
   detail: ItemDetail | null;
   detailLoading: boolean;
   noteMode: NoteMode;
+  lockSession: LockSession;
 
   init: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -100,6 +107,11 @@ interface LibraryState {
   clearMulti: () => void;
   openItem: (id: string) => Promise<void>;
   setNoteMode: (mode: NoteMode) => void;
+  syncLockSession: () => Promise<void>;
+  unlockProtectedContent: () => Promise<boolean>;
+  lockNow: () => Promise<void>;
+  setItemsLocked: (ids: string[], locked: boolean) => Promise<boolean>;
+  setCollectionLocked: (id: string, locked: boolean) => Promise<boolean>;
 
   createNote: () => Promise<Item | null>;
   renameFile: (id: string, stem: string, format?: string | null) => Promise<Item | null>;
@@ -133,6 +145,14 @@ interface LibraryState {
 
 let queryTimer: ReturnType<typeof setTimeout> | undefined;
 let refreshRequest = 0;
+let lockTimer: ReturnType<typeof setTimeout> | undefined;
+let visibilityListenerInstalled = false;
+
+const flushEdits = async () => {
+  const waits: Promise<void>[] = [];
+  window.dispatchEvent(new CustomEvent("nookspace:flush-edits", { detail: waits }));
+  await Promise.all(waits);
+};
 
 export const useLibrary = create<LibraryState>((set, get) => {
   const currentCollectionId = (view: View): string | null =>
@@ -156,6 +176,27 @@ export const useLibrary = create<LibraryState>((set, get) => {
     };
   };
 
+  const applyLockSession = (lockSession: LockSession) => {
+    clearTimeout(lockTimer);
+    set(lockSession.unlocked
+      ? { lockSession }
+      : {
+          lockSession,
+          detail: null,
+          detailLoading: false,
+          noteMode: "read",
+          snippets: {},
+        });
+    if (lockSession.unlocked && lockSession.remainingMs > 0) {
+      lockTimer = setTimeout(() => void get().syncLockSession(), lockSession.remainingMs + 50);
+    }
+  };
+
+  const ensureItemUnlocked = async (id: string) => {
+    const item = get().items.find((candidate) => candidate.id === id);
+    return !item?.effectiveLocked || get().lockSession.unlocked || get().unlockProtectedContent();
+  };
+
   return {
     ready: false,
     loading: false,
@@ -176,15 +217,17 @@ export const useLibrary = create<LibraryState>((set, get) => {
     detail: null,
     detailLoading: false,
     noteMode: "read",
+    lockSession: { unlocked: false, remainingMs: 0 },
 
     init: async () => {
-      const [info, result, collections, tags, savedViews, searchIndex] = await Promise.all([
+      const [info, result, collections, tags, savedViews, searchIndex, lockSession] = await Promise.all([
         ipc.getLibraryInfo().catch(() => null),
         ipc.listItems(filters()).catch(() => ({ entries: [], truncated: false })),
         ipc.listCollections().catch(() => []),
         ipc.listTags().catch(() => []),
         ipc.listSavedViews().catch(() => []),
         ipc.getSearchIndexStatus().catch(() => null),
+        ipc.getLockSession().catch(() => ({ unlocked: false, remainingMs: 0 })),
       ]);
       set({
         info,
@@ -198,6 +241,13 @@ export const useLibrary = create<LibraryState>((set, get) => {
         ready: true,
         loading: false,
       });
+      applyLockSession(lockSession);
+      if (!visibilityListenerInstalled) {
+        visibilityListenerInstalled = true;
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible") void useLibrary.getState().syncLockSession();
+        });
+      }
       void ipc.indexPendingPdfs(false).then(async (indexed) => {
         const status = await ipc.getSearchIndexStatus().catch(() => null);
         set({ searchIndex: status });
@@ -238,6 +288,15 @@ export const useLibrary = create<LibraryState>((set, get) => {
     },
 
     setView: (view) => {
+      if (view.kind === "collection") {
+        const collection = get().collections.find((item) => item.id === view.id);
+        if (collection?.effectiveLocked && !get().lockSession.unlocked) {
+          void get().unlockProtectedContent().then((unlocked) => {
+            if (unlocked) get().setView(view);
+          });
+          return;
+        }
+      }
       const saved = view.kind === "saved" ? get().savedViews.find((item) => item.id === view.id) : null;
       set({
         view,
@@ -268,12 +327,14 @@ export const useLibrary = create<LibraryState>((set, get) => {
         set({ selectedId: null, detail: null, noteMode: "read" });
         return;
       }
+      if (!(await ensureItemUnlocked(id))) return;
       set({ selectedId: id, multiIds: [], multiAnchor: null, detailLoading: true, noteMode: "read" });
       const detail = await ipc.getItem(id).catch(() => null);
       set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
     },
 
     toggleMulti: async (id, additive, range) => {
+      if (!(await ensureItemUnlocked(id))) return;
       const { multiIds, multiAnchor, items } = get();
       if (additive) {
         const next = multiIds.includes(id)
@@ -306,6 +367,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
     clearMulti: () => set({ multiIds: [], multiAnchor: null }),
 
     openItem: async (id) => {
+      if (!(await ensureItemUnlocked(id))) return;
       set({ selectedId: id, detailLoading: true });
       void ipc.touchItem(id);
       const detail = await ipc.getItem(id).catch(() => null);
@@ -320,6 +382,60 @@ export const useLibrary = create<LibraryState>((set, get) => {
     },
 
     setNoteMode: (noteMode) => set({ noteMode }),
+
+    syncLockSession: async () => {
+      const session = await ipc.getLockSession().catch(() => ({ unlocked: false, remainingMs: 0 }));
+      const wasUnlocked = get().lockSession.unlocked;
+      if (wasUnlocked && !session.unlocked) await flushEdits();
+      applyLockSession(session);
+      if (wasUnlocked !== session.unlocked) {
+        await Promise.all([get().refresh(), get().refreshMeta()]);
+      }
+    },
+
+    unlockProtectedContent: async () => {
+      const session = await ipc.unlockProtectedContent().catch((error) => {
+        toast.error(`解锁失败：${String(error)}`);
+        return null;
+      });
+      if (!session) return false;
+      applyLockSession(session);
+      if (session.unlocked) {
+        await Promise.all([get().refresh(), get().refreshMeta()]);
+      }
+      return session.unlocked;
+    },
+
+    lockNow: async () => {
+      await flushEdits();
+      await ipc.lockNow().catch(() => undefined);
+      applyLockSession({ unlocked: false, remainingMs: 0 });
+      await Promise.all([get().refresh(), get().refreshMeta()]);
+    },
+
+    setItemsLocked: async (ids, locked) => {
+      if (!locked && !get().lockSession.unlocked && !(await get().unlockProtectedContent())) {
+        return false;
+      }
+      if (locked) await flushEdits();
+      const changed = await ipc.setItemsLocked(ids, locked).then(() => true).catch(() => false);
+      if (!changed) return false;
+      if (locked) applyLockSession({ unlocked: false, remainingMs: 0 });
+      await Promise.all([get().refresh(), get().refreshMeta()]);
+      return true;
+    },
+
+    setCollectionLocked: async (id, locked) => {
+      if (!locked && !get().lockSession.unlocked && !(await get().unlockProtectedContent())) {
+        return false;
+      }
+      if (locked) await flushEdits();
+      const changed = await ipc.setCollectionLocked(id, locked).then(() => true).catch(() => false);
+      if (!changed) return false;
+      if (locked) applyLockSession({ unlocked: false, remainingMs: 0 });
+      await Promise.all([get().refresh(), get().refreshMeta()]);
+      return true;
+    },
 
     createNote: async () => {
       const { view } = get();

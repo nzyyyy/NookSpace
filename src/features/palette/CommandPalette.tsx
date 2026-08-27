@@ -6,6 +6,7 @@ import {
   Inbox,
   Link2,
   LayoutGrid,
+  Lock,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
@@ -124,7 +125,9 @@ export function CommandPalette() {
               <CommandGroup heading="条目">
                 {results.map((item) => (
                   <CommandItem key={item.id} value={item.title} onSelect={() => openItem(item.id)}>
-                    {item.itemType === "link" ? (
+                    {item.effectiveLocked && !lib.lockSession.unlocked ? (
+                      <Lock className="size-3.5 text-muted-foreground" />
+                    ) : item.itemType === "link" ? (
                       <Link2 className="size-3.5 text-muted-foreground" />
                     ) : canonicalFormat(fileExtension(item.storedPath || item.title)) === "md" ? (
                       <FileText className="size-3.5 text-muted-foreground" />
@@ -163,6 +166,14 @@ export function CommandPalette() {
                 {listCollapsed ? "显示列表" : "隐藏列表"}
                 <kbd className="ml-auto font-mono text-[10px] text-muted-foreground">⌘\</kbd>
               </CommandItem>
+              {lib.lockSession.unlocked ? (
+                <CommandItem onSelect={() => {
+                  void lib.lockNow();
+                  close();
+                }}>
+                  <Lock className="size-3.5" /> 立即锁定
+                </CommandItem>
+              ) : null}
             </CommandGroup>
 
             <CommandSeparator />
@@ -182,7 +193,7 @@ export function CommandPalette() {
               </CommandItem>
               {lib.collections.map((c) => (
                 <CommandItem key={c.id} onSelect={() => go({ kind: "collection", id: c.id })}>
-                  <Folder className="size-3.5" /> {collectionPath(lib.collections, c.id).map((item) => item.name).join(" / ")}
+                  {c.effectiveLocked ? <Lock className="size-3.5" /> : <Folder className="size-3.5" />} {collectionPath(lib.collections, c.id).map((item) => item.name).join(" / ")}
                 </CommandItem>
               ))}
               {lib.tags.map((t) => (

@@ -10,6 +10,7 @@ import {
   FolderPlus,
   Image as ImageIcon,
   Link2,
+  Lock,
   MoreHorizontal,
   Paperclip,
   PanelLeftOpen,
@@ -166,6 +167,7 @@ function Attachments({ item }: { item: Item }) {
   const items = useLibrary((state) => state.items);
   const addAttachments = useLibrary((state) => state.addAttachments);
   const removeAttachment = useLibrary((state) => state.removeAttachment);
+  const unlocked = useLibrary((state) => state.lockSession.unlocked);
   const [open, setOpen] = useState(false);
 
   const attachable = items.filter(
@@ -217,18 +219,22 @@ function Attachments({ item }: { item: Item }) {
           </PopoverContent>
         </Popover>
       </div>
-      {attachments.map((a) => (
+      {attachments.map((a) => {
+        const concealed = a.effectiveLocked && !unlocked;
+        return (
         <div
           key={a.id}
           className="group flex items-center gap-2 rounded-md border border-border px-2 py-1.5 text-[12.5px] hover:bg-accent/50"
         >
-          {a.mime.startsWith("image/") ? (
+          {concealed ? (
+            <Lock className="size-3.5 text-muted-foreground" />
+          ) : a.mime.startsWith("image/") ? (
             <ImageIcon className="size-3.5 text-muted-foreground" />
           ) : (
             <FileIcon className="size-3.5 text-muted-foreground" />
           )}
           <span className="min-w-0 flex-1 truncate">{a.title}</span>
-          <span className="font-mono text-[10.5px] text-muted-foreground">{formatSize(a.size)}</span>
+          <span className="font-mono text-[10.5px] text-muted-foreground">{concealed ? "已锁定" : formatSize(a.size)}</span>
           <button
             className="text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100"
             onClick={() => void removeAttachment(item.id, a.id)}
@@ -237,7 +243,8 @@ function Attachments({ item }: { item: Item }) {
             <X className="size-3.5" />
           </button>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -734,6 +741,8 @@ function FilePreview({
 
 export function DetailPane() {
   const item = useLibrary((state) => state.detail?.item);
+  const selectedId = useLibrary((state) => state.selectedId);
+  const selectedLocked = useLibrary((state) => state.items.find((candidate) => candidate.id === state.selectedId)?.effectiveLocked ?? false);
   const detailLoading = useLibrary((state) => state.detailLoading);
   const toggleFavorite = useLibrary((state) => state.toggleFavorite);
   const listCollapsed = useUi((state) => state.listCollapsed);
@@ -870,6 +879,21 @@ export function DetailPane() {
         detailLoading ? (
           <div className="flex flex-1 items-center justify-center">
             <p className="font-mono text-[12px] text-muted-foreground">加载中…</p>
+          </div>
+        ) : selectedId && selectedLocked ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+            <div className="flex size-11 items-center justify-center rounded-full bg-muted">
+              <Lock className="size-5 text-muted-foreground" />
+            </div>
+            <div>
+              <p className="text-[13px] font-medium">此内容已锁定</p>
+              <p className="mt-1 font-mono text-[11px] text-muted-foreground">使用 Touch ID 或系统密码解锁 5 分钟</p>
+            </div>
+            <Button size="sm" onClick={() => {
+              void useLibrary.getState().unlockProtectedContent().then((unlocked) => {
+                if (unlocked) void useLibrary.getState().select(selectedId);
+              });
+            }}>解锁 5 分钟</Button>
           </div>
         ) : (
           <EmptyDetail />

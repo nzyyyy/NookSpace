@@ -179,6 +179,7 @@ impl Library {
     }
 
     pub fn backup_library(&self, parent: &Path) -> Result<String, String> {
+        self.require_library_export_access()?;
         ensure_outside(&self.root, parent)?;
         let final_path = parent.join(format!("NookSpace Backup {}", timestamp()));
         let temporary = parent.join(format!(".nookspace-backup-{}", uuid::Uuid::new_v4()));
@@ -219,6 +220,7 @@ impl Library {
     }
 
     pub fn move_library(&self, destination: &Path) -> Result<String, String> {
+        self.require_library_export_access()?;
         ensure_outside(&self.root, destination)?;
         if fs::read_dir(destination)
             .map_err(|error| error.to_string())?
@@ -253,6 +255,7 @@ impl Library {
     }
 
     pub fn export_library(&self, parent: &Path) -> Result<String, String> {
+        self.require_library_export_access()?;
         ensure_outside(&self.root, parent)?;
         let final_path = parent.join(format!("NookSpace Export {}", timestamp()));
         let temporary = parent.join(format!(".nookspace-export-{}", uuid::Uuid::new_v4()));

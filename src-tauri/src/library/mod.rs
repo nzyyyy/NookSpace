@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use tauri::{AppHandle, Manager};
@@ -20,6 +21,8 @@ const FILES_DIR: &str = "files";
 const THUMB_DIR: &str = "thumb";
 const LOCATION_FILE: &str = "library-location";
 const TAG_COLORS: &[&str] = &["red", "orange", "amber", "green", "blue", "purple", "pink"];
+const UNLOCK_DURATION: Duration = Duration::from_secs(5 * 60);
+const LOCKED_ERROR: &str = "需要先解锁";
 
 /// The deep module: everything the app knows about its Library lives behind
 /// these methods. The frontend never touches SQL or the filesystem directly.
@@ -30,6 +33,7 @@ pub struct Library {
     cache: PathBuf,
     app_data: PathBuf,
     files_lock: Arc<Mutex<()>>,
+    unlocked_until: Arc<Mutex<Option<Instant>>>,
 }
 
 #[cfg(test)]
@@ -55,6 +59,7 @@ mod tests {
             cache: PathBuf::new(),
             app_data: PathBuf::new(),
             files_lock: Arc::new(Mutex::new(())),
+            unlocked_until: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -74,6 +79,7 @@ mod tests {
             cache,
             app_data,
             files_lock: Arc::new(Mutex::new(())),
+            unlocked_until: Arc::new(Mutex::new(None)),
         };
         lib.migrate_notes_to_files().unwrap();
         (TestRoot(base), lib)
@@ -164,6 +170,112 @@ mod tests {
             })
             .unwrap();
         assert_eq!(uncollected.entries.len(), 1);
+    }
+
+    #[test]
+    fn locks_inherit_redact_search_and_guard_mutations() {
+        let lib = library();
+        let root = lib.create_collection("Private", None).unwrap();
+        let child = lib.create_collection("Nested", Some(&root.id)).unwrap();
+        let other = lib.create_collection("Other", None).unwrap();
+        let item = lib
+            .create_link(
+                "https://example.test/hidden-token",
+                "Visible title",
+                &[child.id.clone(), other.id.clone()],
+            )
+            .unwrap();
+        let secret = lib.create_tag("SecretTag").unwrap();
+        lib.set_item_tags(&item.id, &[secret.id.clone()]).unwrap();
+
+        lib.set_collection_locked(&root.id, true).unwrap();
+        let collections = lib.list_collections().unwrap();
+        assert!(
+            collections
+                .iter()
+                .find(|c| c.id == root.id)
+                .unwrap()
+                .is_locked
+        );
+        let nested = collections.iter().find(|c| c.id == child.id).unwrap();
+        assert!(!nested.is_locked && nested.effective_locked);
+
+        let all = lib.list_items(&ListFilters::default()).unwrap();
+        let locked = &all.entries[0];
+        assert_eq!(locked.item.title, "Visible title");
+        assert!(locked.item.effective_locked);
+        assert!(locked.item.url.is_empty());
+        assert!(locked.item.tags.is_empty());
+        assert!(locked.snippet.is_none());
+
+        let search = |query: &str| ListFilters {
+            query: Some(query.into()),
+            ..ListFilters::default()
+        };
+        assert!(lib
+            .list_items(&search("hidden-token"))
+            .unwrap()
+            .entries
+            .is_empty());
+        assert_eq!(lib.list_items(&search("Visible")).unwrap().entries.len(), 1);
+        assert_eq!(
+            lib.list_items(&search("type:link")).unwrap().entries.len(),
+            1
+        );
+        for query in ["tag:SecretTag", "collection:Nested", "date:>2000-01-01"] {
+            assert!(lib.list_items(&search(query)).unwrap().entries.is_empty());
+        }
+        for filters in [
+            ListFilters {
+                collection_id: Some(child.id.clone()),
+                ..ListFilters::default()
+            },
+            ListFilters {
+                tag_id: Some(secret.id.clone()),
+                ..ListFilters::default()
+            },
+        ] {
+            assert!(lib.list_items(&filters).unwrap().entries.is_empty());
+        }
+        assert_eq!(lib.get_item(&item.id).unwrap_err(), LOCKED_ERROR);
+        assert_eq!(lib.set_favorite(&item.id, true).unwrap_err(), LOCKED_ERROR);
+        assert_eq!(
+            lib.set_collection_locked(&root.id, false).unwrap_err(),
+            LOCKED_ERROR
+        );
+
+        lib.unlock_for_session();
+        assert_eq!(
+            lib.get_item(&item.id).unwrap().item.url,
+            "https://example.test/hidden-token"
+        );
+        assert_eq!(
+            lib.list_items(&search("tag:SecretTag"))
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
+        *lib.unlocked_until.lock().unwrap() = Some(Instant::now() - Duration::from_secs(1));
+        assert!(!lib.lock_session().unlocked);
+        assert_eq!(lib.get_item(&item.id).unwrap_err(), LOCKED_ERROR);
+        lib.unlock_for_session();
+        lib.set_favorite(&item.id, true).unwrap();
+        lib.set_collection_locked(&root.id, false).unwrap();
+        lib.lock_now();
+        assert!(
+            !lib.list_items(&ListFilters::default()).unwrap().entries[0]
+                .item
+                .effective_locked
+        );
+
+        lib.set_items_locked(std::slice::from_ref(&item.id), true)
+            .unwrap();
+        assert_eq!(
+            lib.delete_items(std::slice::from_ref(&item.id))
+                .unwrap_err(),
+            LOCKED_ERROR
+        );
     }
 
     #[test]
@@ -600,6 +712,9 @@ mod tests {
         fs::write(destination.join("occupied"), b"occupied").unwrap();
         assert!(lib.move_library(&destination).is_err());
         fs::remove_file(destination.join("occupied")).unwrap();
+        lib.set_collection_locked(&collection.id, true).unwrap();
+        assert_eq!(lib.move_library(&destination).unwrap_err(), LOCKED_ERROR);
+        lib.unlock_for_session();
         let moved = PathBuf::from(lib.move_library(&destination).unwrap());
         assert_eq!(
             fs::read(moved.join("files/file/data.txt")).unwrap(),
@@ -1070,13 +1185,16 @@ fn row_to_item(row: &Row) -> rusqlite::Result<Item> {
         last_opened_at: row.get(10)?,
         is_favorite: row.get::<_, i64>(11)? != 0,
         deleted_at: row.get(12)?,
+        is_locked: row.get::<_, i64>(13)? != 0,
+        effective_locked: row.get::<_, i64>(14)? != 0,
         tags: Vec::new(),
         collections: Vec::new(),
     })
 }
 
-const ITEM_COLS: &str = "i.id, i.type, i.title, i.content, i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at";
-const LIST_ITEM_COLS: &str = "i.id, i.type, i.title, substr(i.content, 1, 240), i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at";
+const EFFECTIVE_ITEM_LOCK: &str = "(i.is_locked = 1 OR EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1))";
+const ITEM_COLS: &str = "i.id, i.type, i.title, i.content, i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at, i.is_locked, (i.is_locked = 1 OR EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1))";
+const LIST_ITEM_COLS: &str = "i.id, i.type, i.title, substr(i.content, 1, 240), i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at, i.is_locked, (i.is_locked = 1 OR EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1))";
 
 /// Fill `tags` and `collections` on a batch of items in 2 queries (no N+1).
 fn load_relations(conn: &Connection, items: &mut [Item]) -> rusqlite::Result<()> {
@@ -1141,6 +1259,168 @@ fn load_relations(conn: &Connection, items: &mut [Item]) -> rusqlite::Result<()>
 impl Library {
     // ---- setup ---------------------------------------------------------
 
+    pub fn lock_session(&self) -> LockSession {
+        let mut deadline = self.unlocked_until.lock().unwrap();
+        let remaining = deadline
+            .and_then(|until| until.checked_duration_since(Instant::now()))
+            .unwrap_or_default();
+        if remaining.is_zero() {
+            *deadline = None;
+        }
+        LockSession {
+            unlocked: !remaining.is_zero(),
+            remaining_ms: remaining.as_millis().min(u64::MAX as u128) as u64,
+        }
+    }
+
+    pub fn unlock_for_session(&self) -> LockSession {
+        *self.unlocked_until.lock().unwrap() = Some(Instant::now() + UNLOCK_DURATION);
+        self.lock_session()
+    }
+
+    pub fn lock_now(&self) {
+        *self.unlocked_until.lock().unwrap() = None;
+    }
+
+    fn is_unlocked(&self) -> bool {
+        self.lock_session().unlocked
+    }
+
+    fn item_effective_locked(conn: &Connection, id: &str) -> Result<bool, String> {
+        conn.query_row(
+            &format!("SELECT {EFFECTIVE_ITEM_LOCK} FROM items i WHERE i.id = ?1"),
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_err)?
+        .ok_or_else(|| format!("item not found: {id}"))
+    }
+
+    fn collection_effective_locked(conn: &Connection, id: &str) -> Result<bool, String> {
+        conn.query_row(
+            "WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (\
+               SELECT id, parent_id, is_locked FROM collections WHERE id = ?1 \
+               UNION ALL \
+               SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id\
+             ) SELECT EXISTS(SELECT 1 FROM ancestors WHERE is_locked = 1)",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(map_err)
+    }
+
+    fn require_items_access(&self, conn: &Connection, ids: &[String]) -> Result<(), String> {
+        if self.is_unlocked() {
+            return Ok(());
+        }
+        for id in ids {
+            if Self::item_effective_locked(conn, id)? {
+                return Err(LOCKED_ERROR.into());
+            }
+        }
+        Ok(())
+    }
+
+    fn require_item_access(&self, conn: &Connection, id: &str) -> Result<(), String> {
+        self.require_items_access(conn, &[id.to_string()])
+    }
+
+    fn require_collection_access(&self, conn: &Connection, id: &str) -> Result<(), String> {
+        if !self.is_unlocked() && Self::collection_effective_locked(conn, id)? {
+            return Err(LOCKED_ERROR.into());
+        }
+        Ok(())
+    }
+
+    fn require_collection_tree_access(&self, conn: &Connection, id: &str) -> Result<(), String> {
+        if self.is_unlocked() {
+            return Ok(());
+        }
+        let mut stmt = conn
+            .prepare(
+                "WITH RECURSIVE descendants(id) AS (\
+                   SELECT id FROM collections WHERE id = ?1 \
+                   UNION ALL SELECT c.id FROM collections c JOIN descendants d ON c.parent_id = d.id\
+                 ) SELECT id FROM descendants",
+            )
+            .map_err(map_err)?;
+        let ids = stmt
+            .query_map(params![id], |row| row.get::<_, String>(0))
+            .map_err(map_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(map_err)?;
+        for id in ids {
+            if Self::collection_effective_locked(conn, &id)? {
+                return Err(LOCKED_ERROR.into());
+            }
+        }
+        let mut stmt = conn
+            .prepare(
+                "WITH RECURSIVE descendants(id) AS (\
+                   SELECT id FROM collections WHERE id = ?1 \
+                   UNION ALL SELECT c.id FROM collections c JOIN descendants d ON c.parent_id = d.id\
+                 ) SELECT DISTINCT item_id FROM item_collections WHERE collection_id IN (SELECT id FROM descendants)",
+            )
+            .map_err(map_err)?;
+        let item_ids = stmt
+            .query_map(params![id], |row| row.get::<_, String>(0))
+            .map_err(map_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(map_err)?;
+        self.require_items_access(conn, &item_ids)?;
+        Ok(())
+    }
+
+    fn require_tag_access(&self, conn: &Connection, id: &str) -> Result<(), String> {
+        if self.is_unlocked() {
+            return Ok(());
+        }
+        let mut stmt = conn
+            .prepare("SELECT item_id FROM item_tags WHERE tag_id = ?1")
+            .map_err(map_err)?;
+        let ids = stmt
+            .query_map(params![id], |row| row.get::<_, String>(0))
+            .map_err(map_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(map_err)?;
+        self.require_items_access(conn, &ids)
+    }
+
+    pub(crate) fn require_library_export_access(&self) -> Result<(), String> {
+        if self.is_unlocked() {
+            return Ok(());
+        }
+        let conn = self.db.lock().unwrap();
+        let any_locked: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM items WHERE is_locked = 1) \
+                 OR EXISTS(SELECT 1 FROM collections WHERE is_locked = 1)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(map_err)?;
+        if any_locked {
+            Err(LOCKED_ERROR.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn redact_item(item: &mut Item) {
+        item.content.clear();
+        item.url.clear();
+        item.stored_path.clear();
+        item.size = 0;
+        item.mime.clear();
+        item.created_at.clear();
+        item.updated_at.clear();
+        item.last_opened_at.clear();
+        item.is_favorite = false;
+        item.tags.clear();
+        item.collections.clear();
+    }
+
     pub fn init(app: &AppHandle) -> Result<Self, String> {
         let app_data = app.path().app_data_dir().map_err(map_err)?;
         let cache = app.path().app_cache_dir().map_err(map_err)?;
@@ -1166,6 +1446,7 @@ impl Library {
             cache,
             app_data,
             files_lock: Arc::new(Mutex::new(())),
+            unlocked_until: Arc::new(Mutex::new(None)),
         };
         lib.migrate_notes_to_files()?;
         Ok(lib)
@@ -1303,6 +1584,7 @@ impl Library {
 
     pub fn list_items(&self, f: &ListFilters) -> Result<ListResult, String> {
         let conn = self.db.lock().unwrap();
+        let unlocked = self.is_unlocked();
         let query = f.query.as_deref().unwrap_or("").trim();
         let parsed = search::parse_query(query);
         let fts_query = search::fts_query(&parsed.text);
@@ -1325,6 +1607,11 @@ impl Library {
             sql.push_str(" AND i.deleted_at IS NULL");
             if f.view == "favorites" {
                 sql.push_str(" AND i.is_favorite = 1");
+                if !unlocked {
+                    sql.push_str(&format!(" AND NOT {EFFECTIVE_ITEM_LOCK}"));
+                }
+            } else if f.view == "recent" && !unlocked {
+                sql.push_str(&format!(" AND NOT {EFFECTIVE_ITEM_LOCK}"));
             } else if f.view == "uncollected" {
                 sql.push_str(
                     " AND NOT EXISTS (SELECT 1 FROM item_collections ic WHERE ic.item_id = i.id)",
@@ -1388,9 +1675,36 @@ impl Library {
             }
             params.push(Box::new(date.clone()));
         }
+        if !unlocked
+            && (f.collection_id.is_some()
+                || f.tag_id.is_some()
+                || !parsed.tags.is_empty()
+                || !parsed.collections.is_empty()
+                || !parsed.dates.is_empty())
+        {
+            sql.push_str(&format!(" AND NOT {EFFECTIVE_ITEM_LOCK}"));
+        }
         if let Some(fts) = &fts_query {
-            sql.push_str(" AND i.rowid IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)");
-            params.push(Box::new(fts.clone()));
+            if unlocked {
+                sql.push_str(
+                    " AND i.rowid IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)",
+                );
+                params.push(Box::new(fts.clone()));
+            } else {
+                sql.push_str(&format!(" AND ((NOT {EFFECTIVE_ITEM_LOCK} AND i.rowid IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)) OR ({EFFECTIVE_ITEM_LOCK}"));
+                params.push(Box::new(fts.clone()));
+                for term in &parsed.text {
+                    let pattern = format!(
+                        "%{}%",
+                        term.replace('\\', "\\\\")
+                            .replace('%', "\\%")
+                            .replace('_', "\\_")
+                    );
+                    sql.push_str(" AND i.title LIKE ? ESCAPE '\\'");
+                    params.push(Box::new(pattern));
+                }
+                sql.push_str("))");
+            }
         } else {
             for term in &parsed.text {
                 let pattern = format!(
@@ -1399,7 +1713,11 @@ impl Library {
                         .replace('%', "\\%")
                         .replace('_', "\\_")
                 );
-                sql.push_str(" AND (i.title LIKE ? ESCAPE '\\' OR i.content LIKE ? ESCAPE '\\' OR i.url LIKE ? ESCAPE '\\' OR i.extracted_text LIKE ? ESCAPE '\\')");
+                if unlocked {
+                    sql.push_str(" AND (i.title LIKE ? ESCAPE '\\' OR i.content LIKE ? ESCAPE '\\' OR i.url LIKE ? ESCAPE '\\' OR i.extracted_text LIKE ? ESCAPE '\\')");
+                } else {
+                    sql.push_str(&format!(" AND (i.title LIKE ? ESCAPE '\\' OR (NOT {EFFECTIVE_ITEM_LOCK} AND (i.content LIKE ? ESCAPE '\\' OR i.url LIKE ? ESCAPE '\\' OR i.extracted_text LIKE ? ESCAPE '\\')))"));
+                }
                 for _ in 0..4 {
                     params.push(Box::new(pattern.clone()));
                 }
@@ -1434,7 +1752,7 @@ impl Library {
             let mut stmt = conn.prepare(&sql).map_err(map_err)?;
             let rows = stmt
                 .query_map(params_from_iter(params.iter().map(|b| b.as_ref())), |row| {
-                    Ok((row_to_item(row)?, row.get(13)?, row.get(14)?, row.get(15)?))
+                    Ok((row_to_item(row)?, row.get(15)?, row.get(16)?, row.get(17)?))
                 })
                 .map_err(map_err)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(map_err)?
@@ -1448,15 +1766,26 @@ impl Library {
         let entries = items
             .into_iter()
             .zip(raw)
-            .map(|(item, (_, content, extracted, fts_snippet))| ListEntry {
-                snippet: fts_snippet.or_else(|| {
-                    search::plain_snippet(
-                        &[&item.title, &content, &item.url, &extracted],
-                        &parsed.text,
-                    )
-                }),
-                item: item.into(),
-                highlight_terms: parsed.text.clone(),
+            .map(|(mut item, (_, content, extracted, fts_snippet))| {
+                let locked = item.effective_locked && !unlocked;
+                let snippet = (!locked)
+                    .then(|| {
+                        fts_snippet.or_else(|| {
+                            search::plain_snippet(
+                                &[&item.title, &content, &item.url, &extracted],
+                                &parsed.text,
+                            )
+                        })
+                    })
+                    .flatten();
+                if locked {
+                    Self::redact_item(&mut item);
+                }
+                ListEntry {
+                    snippet,
+                    item: item.into(),
+                    highlight_terms: parsed.text.clone(),
+                }
             })
             .collect();
         Ok(ListResult { entries, truncated })
@@ -1491,7 +1820,16 @@ impl Library {
 
     pub fn get_item(&self, id: &str) -> Result<ItemDetail, String> {
         let conn = self.db.lock().unwrap();
-        self.get_item_locked(&conn, id)
+        self.require_item_access(&conn, id)?;
+        let mut detail = self.get_item_locked(&conn, id)?;
+        if !self.is_unlocked() {
+            for attachment in &mut detail.attachments {
+                if attachment.effective_locked {
+                    Self::redact_item(attachment);
+                }
+            }
+        }
+        Ok(detail)
     }
 
     /// Insert an item row; returns the new id. Caller must not hold the lock.
@@ -1508,6 +1846,9 @@ impl Library {
         collection_ids: &[String],
     ) -> Result<String, String> {
         let conn = self.db.lock().unwrap();
+        for collection_id in collection_ids {
+            self.require_collection_access(&conn, collection_id)?;
+        }
         let id = uuid();
         conn.execute(
             "INSERT INTO items (id, type, title, content, url, stored_path, size, mime, created_at, updated_at, meta) \
@@ -1700,6 +2041,7 @@ impl Library {
 
     pub fn delete_items(&self, ids: &[String]) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
+        self.require_items_access(&conn, ids)?;
         let placeholders = vec!["?"; ids.len()].join(",");
         let sql = format!("UPDATE items SET deleted_at = datetime('now') WHERE id IN ({placeholders}) AND deleted_at IS NULL");
         conn.execute(&sql, params_from_iter(ids.iter()))
@@ -1709,6 +2051,7 @@ impl Library {
 
     pub fn restore_items(&self, ids: &[String]) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
+        self.require_items_access(&conn, ids)?;
         let placeholders = vec!["?"; ids.len()].join(",");
         let sql = format!("UPDATE items SET deleted_at = NULL WHERE id IN ({placeholders})");
         conn.execute(&sql, params_from_iter(ids.iter()))
@@ -1719,6 +2062,18 @@ impl Library {
     pub fn empty_trash(&self) -> Result<(), String> {
         let _files = self.files_lock.lock().unwrap();
         let mut conn = self.db.lock().unwrap();
+        let all_ids = {
+            let mut stmt = conn
+                .prepare("SELECT id FROM items WHERE deleted_at IS NOT NULL")
+                .map_err(map_err)?;
+            let ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(map_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_err)?;
+            ids
+        };
+        self.require_items_access(&conn, &all_ids)?;
         let rows: Vec<(String, String)> = {
             let mut stmt = conn
                 .prepare("SELECT id, stored_path FROM items WHERE deleted_at IS NOT NULL AND type = 'file'")
@@ -1755,6 +2110,7 @@ impl Library {
         }
         let _files = self.files_lock.lock().unwrap();
         let mut conn = self.db.lock().unwrap();
+        self.require_items_access(&conn, ids)?;
         let placeholders = vec!["?"; ids.len()].join(",");
         let rows: Vec<(String, String)> = {
             let sql = format!(
@@ -1793,6 +2149,7 @@ impl Library {
     pub fn set_favorite(&self, id: &str, favorite: bool) -> Result<Item, String> {
         {
             let conn = self.db.lock().unwrap();
+            self.require_item_access(&conn, id)?;
             conn.execute(
                 "UPDATE items SET is_favorite = ?1 WHERE id = ?2",
                 params![if favorite { 1 } else { 0 }, id],
@@ -1804,6 +2161,7 @@ impl Library {
 
     pub fn touch_item(&self, id: &str) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
+        self.require_item_access(&conn, id)?;
         conn.execute(
             "UPDATE items SET last_opened_at = datetime('now') WHERE id = ?1",
             params![id],
@@ -1817,7 +2175,12 @@ impl Library {
     pub fn list_collections(&self) -> Result<Vec<Collection>, String> {
         let conn = self.db.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, parent_id, position, created_at FROM collections ORDER BY position ASC, name COLLATE NOCASE")
+            .prepare("SELECT c.id, c.name, c.parent_id, c.position, c.created_at, c.is_locked, \
+                      EXISTS(WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (\
+                        SELECT id, parent_id, is_locked FROM collections WHERE id = c.id \
+                        UNION ALL SELECT p.id, p.parent_id, p.is_locked FROM collections p JOIN ancestors a ON a.parent_id = p.id\
+                      ) SELECT 1 FROM ancestors WHERE is_locked = 1) \
+                      FROM collections c ORDER BY c.position ASC, c.name COLLATE NOCASE")
             .map_err(map_err)?;
         let rows = stmt
             .query_map([], |r| {
@@ -1827,6 +2190,8 @@ impl Library {
                     parent_id: r.get(2)?,
                     position: r.get(3)?,
                     created_at: r.get(4)?,
+                    is_locked: r.get::<_, i64>(5)? != 0,
+                    effective_locked: r.get::<_, i64>(6)? != 0,
                 })
             })
             .map_err(map_err)?;
@@ -1844,6 +2209,7 @@ impl Library {
             return Err("集合名称不能为空".into());
         }
         if let Some(parent_id) = parent_id {
+            self.require_collection_access(&conn, parent_id)?;
             let exists: bool = conn
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM collections WHERE id = ?1)",
@@ -1871,17 +2237,66 @@ impl Library {
         let created_at: String = conn
             .query_row("SELECT datetime('now')", [], |r| r.get(0))
             .map_err(map_err)?;
+        let effective_locked = parent_id.is_some_and(|parent| {
+            Self::collection_effective_locked(&conn, parent).unwrap_or(false)
+        });
         Ok(Collection {
             id,
             name: name.to_string(),
             parent_id: parent_id.map(|s| s.to_string()),
             position,
             created_at,
+            is_locked: false,
+            effective_locked,
         })
+    }
+
+    pub fn set_items_locked(&self, ids: &[String], locked: bool) -> Result<(), String> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.db.lock().unwrap();
+        if !locked {
+            self.require_items_access(&conn, ids)?;
+        }
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "UPDATE items SET is_locked = {} WHERE id IN ({placeholders})",
+            if locked { 1 } else { 0 }
+        );
+        conn.execute(&sql, params_from_iter(ids.iter()))
+            .map_err(map_err)?;
+        drop(conn);
+        if locked {
+            self.lock_now();
+        }
+        Ok(())
+    }
+
+    pub fn set_collection_locked(&self, id: &str, locked: bool) -> Result<(), String> {
+        let conn = self.db.lock().unwrap();
+        if !locked {
+            self.require_collection_access(&conn, id)?;
+        }
+        let updated = conn
+            .execute(
+                "UPDATE collections SET is_locked = ?1 WHERE id = ?2",
+                params![if locked { 1 } else { 0 }, id],
+            )
+            .map_err(map_err)?;
+        if updated != 1 {
+            return Err("集合不存在".into());
+        }
+        drop(conn);
+        if locked {
+            self.lock_now();
+        }
+        Ok(())
     }
 
     pub fn rename_collection(&self, id: &str, name: &str) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
+        self.require_collection_access(&conn, id)?;
         let name = name.trim();
         if name.is_empty() {
             return Err("集合名称不能为空".into());
@@ -1909,6 +2324,10 @@ impl Library {
         }
 
         let mut conn = self.db.lock().unwrap();
+        self.require_collection_tree_access(&conn, id)?;
+        if let Some(parent_id) = parent_id {
+            self.require_collection_access(&conn, parent_id)?;
+        }
         let tx = conn.transaction().map_err(map_err)?;
         let old_parent: Option<String> = tx
             .query_row(
@@ -1998,6 +2417,7 @@ impl Library {
 
     pub fn delete_collection_tree(&self, id: &str) -> Result<i64, String> {
         let mut conn = self.db.lock().unwrap();
+        self.require_collection_tree_access(&conn, id)?;
         let tx = conn.transaction().map_err(map_err)?;
         let count: i64 = tx
             .query_row(
@@ -2032,6 +2452,8 @@ impl Library {
         collection_id: &str,
     ) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
+        self.require_items_access(&conn, item_ids)?;
+        self.require_collection_access(&conn, collection_id)?;
         for item_id in item_ids {
             conn.execute(
                 "INSERT OR IGNORE INTO item_collections (item_id, collection_id) VALUES (?1, ?2)",
@@ -2048,6 +2470,8 @@ impl Library {
         collection_id: &str,
     ) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
+        self.require_items_access(&conn, item_ids)?;
+        self.require_collection_access(&conn, collection_id)?;
         for item_id in item_ids {
             conn.execute(
                 "DELETE FROM item_collections WHERE item_id = ?1 AND collection_id = ?2",
@@ -2111,6 +2535,7 @@ impl Library {
 
     pub fn rename_tag(&self, id: &str, name: &str) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
+        self.require_tag_access(&conn, id)?;
         let name = name.trim();
         if name.is_empty() {
             return Err("标签名称不能为空".into());
@@ -2129,6 +2554,7 @@ impl Library {
             return Err("无效的标签颜色".into());
         }
         let conn = self.db.lock().unwrap();
+        self.require_tag_access(&conn, id)?;
         let updated = conn
             .execute(
                 "UPDATE tags SET color = ?1 WHERE id = ?2",
@@ -2155,6 +2581,7 @@ impl Library {
 
     pub fn delete_tag(&self, id: &str) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
+        self.require_tag_access(&conn, id)?;
         conn.execute("DELETE FROM tags WHERE id = ?1", params![id])
             .map_err(map_err)?;
         Ok(())
@@ -2163,6 +2590,7 @@ impl Library {
     pub fn set_item_tags(&self, item_id: &str, tag_ids: &[String]) -> Result<Item, String> {
         {
             let conn = self.db.lock().unwrap();
+            self.require_item_access(&conn, item_id)?;
             conn.execute("DELETE FROM item_tags WHERE item_id = ?1", params![item_id])
                 .map_err(map_err)?;
             for tag_id in tag_ids {
@@ -2185,6 +2613,8 @@ impl Library {
     ) -> Result<ItemDetail, String> {
         {
             let conn = self.db.lock().unwrap();
+            self.require_item_access(&conn, parent_id)?;
+            self.require_items_access(&conn, child_ids)?;
             let parent: (String, String) = conn
                 .query_row(
                     "SELECT type, stored_path FROM items WHERE id = ?1",
@@ -2223,6 +2653,8 @@ impl Library {
     pub fn remove_attachment(&self, parent_id: &str, child_id: &str) -> Result<ItemDetail, String> {
         {
             let conn = self.db.lock().unwrap();
+            self.require_item_access(&conn, parent_id)?;
+            self.require_item_access(&conn, child_id)?;
             conn.execute(
                 "DELETE FROM attachments WHERE parent_id = ?1 AND child_id = ?2",
                 params![parent_id, child_id],
@@ -2239,6 +2671,10 @@ impl Library {
         paths: &[String],
         collection_id: Option<&str>,
     ) -> Result<ImportResult, String> {
+        if let Some(collection_id) = collection_id {
+            let conn = self.db.lock().unwrap();
+            self.require_collection_access(&conn, collection_id)?;
+        }
         let _files = self.files_lock.lock().unwrap();
         import::import_files(self, paths, collection_id)
     }
@@ -2275,6 +2711,7 @@ impl Library {
     /// Absolute path of a File item's stored file (for in-window preview).
     pub fn file_abs_path(&self, id: &str) -> Result<Option<String>, String> {
         let conn = self.db.lock().unwrap();
+        self.require_item_access(&conn, id)?;
         let stored: Option<(String, String)> = conn
             .query_row(
                 "SELECT stored_path, mime FROM items WHERE id = ?1 AND type = 'file'",

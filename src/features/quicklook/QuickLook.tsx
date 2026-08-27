@@ -1,10 +1,11 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { ExternalLink, Eye, File as FileIcon, Image as ImageIcon, X } from "lucide-react";
 import { convertFileSrc, ipc, type ItemDetail } from "@/core/ipc";
 import { formatFullDate, formatSize } from "@/lib/format";
 import { isMediaFile } from "@/lib/file-types";
 import { useUi } from "@/stores/ui";
+import { useLibrary } from "@/stores/library";
 import { Button } from "@/components/ui/button";
 
 const PdfPreview = lazy(() => import("@/components/PdfPreview"));
@@ -13,6 +14,17 @@ export function QuickLook() {
   const { quickLookId, setQuickLookId } = useUi();
   const [detail, setDetail] = useState<ItemDetail | null>(null);
   const [absPath, setAbsPath] = useState<string | null>(null);
+  const unlocked = useLibrary((state) => state.lockSession.unlocked);
+  const wasUnlocked = useRef(unlocked);
+
+  useEffect(() => {
+    if (wasUnlocked.current && !unlocked) {
+      setDetail(null);
+      setAbsPath(null);
+      setQuickLookId(null);
+    }
+    wasUnlocked.current = unlocked;
+  }, [setQuickLookId, unlocked]);
 
   useEffect(() => {
     if (!quickLookId) {
