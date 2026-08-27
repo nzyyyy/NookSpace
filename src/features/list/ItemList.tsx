@@ -55,6 +55,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { CollectionPicker } from "@/features/list/CollectionPicker";
+import { useItemActions } from "@/features/list/item-actions";
 import {
   Dialog,
   DialogContent,
@@ -99,7 +100,7 @@ function viewTitle(
 
 function TypeIcon({ item, className }: { item: ItemSummary; className?: string }) {
   const unlocked = useLibrary((state) => state.lockSession.unlocked);
-  if (item.effectiveLocked && !unlocked) return <Lock className={className} />;
+  if (item.collectionLocked && !unlocked) return <Lock className={className} />;
   if (item.itemType === "link") return <Link2 className={className} />;
   if (canonicalFormat(fileExtension(item.storedPath || item.title)) === "md") {
     return <FileText className={className} />;
@@ -154,14 +155,16 @@ function ItemRow({
   snippet?: string;
   terms: string[];
 }) {
-  const concealed = item.effectiveLocked && !useLibrary((state) => state.lockSession.unlocked);
+  const unlocked = useLibrary((state) => state.lockSession.unlocked);
+  const protectedLocked = item.effectiveLocked && !unlocked;
+  const concealed = item.collectionLocked && !unlocked;
   return (
     <div
       role="button"
       tabIndex={-1}
       onClick={onActivate}
       className={cn(
-        "group flex cursor-default flex-col gap-0.5 rounded-md px-3 py-2 select-none",
+        "group flex cursor-default flex-col gap-0.5 rounded-md px-3 py-2 select-none group-data-[state=open]/item-menu:bg-accent",
         "focus-visible:ring-2 focus-visible:ring-ring/50",
         selected || multi
           ? "bg-accent text-foreground"
@@ -173,8 +176,9 @@ function ItemRow({
         <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium">
           <Highlight text={displayStem(item.title, item.storedPath) || "无标题"} terms={terms} />
         </span>
+        {protectedLocked && !concealed ? <Lock className="size-3 text-muted-foreground" /> : null}
         <button
-          disabled={concealed}
+          disabled={protectedLocked}
           tabIndex={-1}
           className={cn(
             "opacity-0 transition-opacity group-hover:opacity-100",
@@ -238,10 +242,12 @@ function ItemCard({
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [thumbnail, setThumbnail] = useState<string | null>(null);
-  const concealed = item.effectiveLocked && !useLibrary((state) => state.lockSession.unlocked);
+  const unlocked = useLibrary((state) => state.lockSession.unlocked);
+  const protectedLocked = item.effectiveLocked && !unlocked;
+  const concealed = item.collectionLocked && !unlocked;
 
   useEffect(() => {
-    if (concealed) {
+    if (protectedLocked) {
       setThumbnail(null);
       return;
     }
@@ -253,14 +259,14 @@ function ItemCard({
     }, { rootMargin: "120px" });
     observer.observe(ref.current);
     return () => observer.disconnect();
-  }, [concealed, item.id, item.itemType, item.mime, item.storedPath, item.title]);
+  }, [protectedLocked, item.id, item.itemType, item.mime, item.storedPath, item.title]);
 
   let secondary = "";
   if (snippet) secondary = snippet;
   else if (item.itemType === "file" && item.contentPreview.trim()) {
     secondary = item.contentPreview.replace(/\s+/g, " ").trim();
   } else if (item.itemType === "link") {
-    try { secondary = new URL(item.url).hostname; } catch { secondary = item.url; }
+    try { secondary = new URL(item.url).hostname; } catch { secondary = metaLine(item, concealed); }
   } else secondary = metaLine(item, concealed);
 
   return (
@@ -271,12 +277,12 @@ function ItemCard({
       onClick={onActivate}
       style={{ contentVisibility: "auto" }}
       className={cn(
-        "group flex min-h-44 cursor-default flex-col overflow-hidden rounded-lg border bg-card select-none",
+        "group flex min-h-44 cursor-default flex-col overflow-hidden rounded-lg border bg-card select-none group-data-[state=open]/item-menu:bg-accent",
         selected || multi ? "border-primary/50 ring-2 ring-primary/20" : "border-border hover:border-foreground/20",
       )}
     >
       <div className="flex h-28 items-center justify-center overflow-hidden bg-muted/50">
-        {concealed ? (
+        {protectedLocked ? (
           <Lock className="size-8 text-muted-foreground/50" />
         ) : thumbnail ? (
           <img src={thumbnail} alt="" className="size-full object-cover" draggable={false} />
@@ -291,6 +297,7 @@ function ItemCard({
       <div className="flex min-w-0 flex-1 flex-col gap-1 p-2.5">
         <div className="flex items-center gap-1.5">
           <span className="min-w-0 flex-1 truncate text-[13px] font-medium"><Highlight text={displayStem(item.title, item.storedPath) || "无标题"} terms={terms} /></span>
+          {protectedLocked ? <Lock className="size-3 text-muted-foreground" /> : null}
           {item.isFavorite ? <Star className="size-3 fill-primary text-primary" /> : null}
         </div>
         <span className="line-clamp-2 font-mono text-[10.5px] text-muted-foreground"><Highlight text={secondary} terms={terms} /></span>
@@ -306,25 +313,26 @@ function ItemCard({
   );
 }
 
-function ItemLockMenu({ item, children }: { item: ItemSummary; children: React.ReactNode }) {
-  const { lockSession, setItemsLocked, unlockProtectedContent } = useLibrary();
+function ItemContextMenu({ item, children }: { item: ItemSummary; children: React.ReactNode }) {
+  const actions = useItemActions(item);
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuTrigger asChild>
+        <div className="group/item-menu contents">{children}</div>
+      </ContextMenuTrigger>
       <ContextMenuContent className="min-w-44">
-        {item.effectiveLocked && !lockSession.unlocked ? (
-          <ContextMenuItem onSelect={() => void unlockProtectedContent()}>
-            <LockOpen className="size-3.5" /> 解锁 5 分钟
+        {actions.map((action) => action.kind === "separator" ? (
+          <ContextMenuSeparator key={action.key} />
+        ) : (
+          <ContextMenuItem
+            key={action.key}
+            disabled={action.disabled}
+            variant={action.destructive ? "destructive" : "default"}
+            onSelect={() => void action.run?.()}
+          >
+            {action.icon}{action.label}
           </ContextMenuItem>
-        ) : null}
-        {item.effectiveLocked && !lockSession.unlocked ? <ContextMenuSeparator /> : null}
-        <ContextMenuItem onSelect={() => void setItemsLocked([item.id], !item.isLocked)}>
-          {item.isLocked ? <LockOpen className="size-3.5" /> : <Lock className="size-3.5" />}
-          {item.isLocked ? "取消锁定" : "锁定"}
-        </ContextMenuItem>
-        {!item.isLocked && item.effectiveLocked ? (
-          <ContextMenuItem disabled>由所属集合锁定</ContextMenuItem>
-        ) : null}
+        ))}
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -712,7 +720,7 @@ export function ItemList() {
         ) : (
           <div className={cn(listLayout === "grid" ? "grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2 p-3" : "flex flex-col gap-px p-2")}>
             {items.map((item) => (
-              <ItemLockMenu key={item.id} item={item}>
+              <ItemContextMenu key={item.id} item={item}>
                 {listLayout === "grid" ? <ItemCard
                 item={item}
                 selected={selectedId === item.id}
@@ -728,7 +736,7 @@ export function ItemList() {
                 snippet={snippets[item.id]?.text}
                 terms={snippets[item.id]?.terms ?? []}
               />}
-              </ItemLockMenu>
+              </ItemContextMenu>
             ))}
             {items.length === 0 && (
               <div className="px-4 py-10 text-center">

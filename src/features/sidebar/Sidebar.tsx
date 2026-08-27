@@ -221,7 +221,7 @@ function CollectionRows({
                 onClickCapture={onClickCapture}
                 whileDrag={{ scale: 1.01 }}
                 className={cn(
-                  "relative flex touch-none items-center cursor-grab select-none active:cursor-grabbing",
+                  "group/collection-menu relative flex touch-none items-center cursor-grab select-none active:cursor-grabbing",
                   isDragging && "z-20 opacity-60 drop-shadow-sm",
                 )}
                 style={{ paddingLeft: depth * 12 }}
@@ -237,7 +237,7 @@ function CollectionRows({
                 ) : null}
                 <div
                   className={cn(
-                    "flex min-w-0 flex-1 items-center rounded-md transition-[background-color,box-shadow] duration-100",
+                    "flex min-w-0 flex-1 items-center rounded-md transition-[background-color,box-shadow] duration-100 group-data-[state=open]/collection-menu:bg-accent",
                     targetZone === "inside" && "bg-accent ring-1 ring-inset ring-primary/35",
                   )}
                 >

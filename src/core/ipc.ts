@@ -37,6 +37,7 @@ export interface Item {
   isFavorite: boolean;
   deletedAt: string | null;
   isLocked: boolean;
+  collectionLocked: boolean;
   effectiveLocked: boolean;
   tags: Tag[];
   collections: string[];
@@ -57,6 +58,7 @@ export interface ItemSummary {
   isFavorite: boolean;
   deletedAt: string | null;
   isLocked: boolean;
+  collectionLocked: boolean;
   effectiveLocked: boolean;
   tags: Tag[];
   collections: string[];

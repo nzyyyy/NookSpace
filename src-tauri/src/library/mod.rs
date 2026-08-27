@@ -203,6 +203,7 @@ mod tests {
         let all = lib.list_items(&ListFilters::default()).unwrap();
         let locked = &all.entries[0];
         assert_eq!(locked.item.title, "Visible title");
+        assert!(locked.item.collection_locked);
         assert!(locked.item.effective_locked);
         assert!(locked.item.url.is_empty());
         assert!(locked.item.tags.is_empty());
@@ -276,6 +277,108 @@ mod tests {
                 .unwrap_err(),
             LOCKED_ERROR
         );
+    }
+
+    #[test]
+    fn direct_item_lock_keeps_metadata_and_collection_lock_wins() {
+        let (temp, lib) = disk_library();
+        let collection = lib.create_collection("Private", None).unwrap();
+        let item = lib
+            .create_note(
+                "Visible file",
+                "hidden body",
+                std::slice::from_ref(&collection.id),
+            )
+            .unwrap();
+        let tag = lib.create_tag("Visible tag").unwrap();
+        lib.set_item_tags(&item.id, std::slice::from_ref(&tag.id))
+            .unwrap();
+        lib.set_favorite(&item.id, true).unwrap();
+        lib.touch_item(&item.id).unwrap();
+
+        lib.set_items_locked(std::slice::from_ref(&item.id), true)
+            .unwrap();
+        let direct = lib
+            .list_items(&ListFilters::default())
+            .unwrap()
+            .entries
+            .into_iter()
+            .find(|entry| entry.item.id == item.id)
+            .unwrap();
+        assert!(direct.item.is_locked && direct.item.effective_locked);
+        assert!(!direct.item.collection_locked);
+        assert_eq!(direct.item.title, "Visible file");
+        assert_eq!(direct.item.size, "hidden body".len() as i64);
+        assert_eq!(direct.item.mime, "text/markdown");
+        assert!(!direct.item.stored_path.is_empty());
+        assert!(direct.item.is_favorite);
+        assert_eq!(direct.item.tags.len(), 1);
+        assert!(direct.item.content_preview.is_empty());
+        assert!(direct.snippet.is_none());
+        for filters in [
+            ListFilters {
+                view: "favorites".into(),
+                ..ListFilters::default()
+            },
+            ListFilters {
+                view: "recent".into(),
+                ..ListFilters::default()
+            },
+            ListFilters {
+                tag_id: Some(tag.id.clone()),
+                ..ListFilters::default()
+            },
+        ] {
+            assert_eq!(lib.list_items(&filters).unwrap().entries.len(), 1);
+        }
+        assert!(lib
+            .list_items(&ListFilters {
+                query: Some("hidden body".into()),
+                ..ListFilters::default()
+            })
+            .unwrap()
+            .entries
+            .is_empty());
+
+        assert_eq!(lib.get_item(&item.id).unwrap_err(), LOCKED_ERROR);
+        assert_eq!(lib.generate_thumbnail(&item.id).unwrap_err(), LOCKED_ERROR);
+        assert_eq!(lib.open_with_default(&item.id).unwrap_err(), LOCKED_ERROR);
+        assert_eq!(lib.quicklook(&item.id).unwrap_err(), LOCKED_ERROR);
+        assert_eq!(
+            lib.export_item(&item.id, &temp.0.join("export.md"))
+                .unwrap_err(),
+            LOCKED_ERROR
+        );
+        assert_eq!(
+            lib.delete_items(std::slice::from_ref(&item.id))
+                .unwrap_err(),
+            LOCKED_ERROR
+        );
+
+        lib.unlock_for_session();
+        assert_eq!(lib.get_item(&item.id).unwrap().item.content, "hidden body");
+        lib.set_collection_locked(&collection.id, true).unwrap();
+        lib.lock_now();
+        let inherited = lib
+            .list_items(&ListFilters::default())
+            .unwrap()
+            .entries
+            .remove(0);
+        assert!(inherited.item.is_locked && inherited.item.collection_locked);
+        assert_eq!(inherited.item.size, 0);
+        assert!(inherited.item.mime.is_empty());
+        assert!(inherited.item.tags.is_empty());
+
+        lib.unlock_for_session();
+        lib.set_collection_locked(&collection.id, false).unwrap();
+        lib.lock_now();
+        let direct_again = lib
+            .list_items(&ListFilters::default())
+            .unwrap()
+            .entries
+            .remove(0);
+        assert!(direct_again.item.is_locked && !direct_again.item.collection_locked);
+        assert_eq!(direct_again.item.size, "hidden body".len() as i64);
     }
 
     #[test]
@@ -1171,6 +1274,8 @@ fn map_err(e: impl std::fmt::Display) -> String {
 }
 
 fn row_to_item(row: &Row) -> rusqlite::Result<Item> {
+    let is_locked = row.get::<_, i64>(13)? != 0;
+    let collection_locked = row.get::<_, i64>(14)? != 0;
     Ok(Item {
         id: row.get(0)?,
         item_type: row.get(1)?,
@@ -1185,16 +1290,18 @@ fn row_to_item(row: &Row) -> rusqlite::Result<Item> {
         last_opened_at: row.get(10)?,
         is_favorite: row.get::<_, i64>(11)? != 0,
         deleted_at: row.get(12)?,
-        is_locked: row.get::<_, i64>(13)? != 0,
-        effective_locked: row.get::<_, i64>(14)? != 0,
+        is_locked,
+        collection_locked,
+        effective_locked: is_locked || collection_locked,
         tags: Vec::new(),
         collections: Vec::new(),
     })
 }
 
+const COLLECTION_ITEM_LOCK: &str = "EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1)";
 const EFFECTIVE_ITEM_LOCK: &str = "(i.is_locked = 1 OR EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1))";
-const ITEM_COLS: &str = "i.id, i.type, i.title, i.content, i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at, i.is_locked, (i.is_locked = 1 OR EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1))";
-const LIST_ITEM_COLS: &str = "i.id, i.type, i.title, substr(i.content, 1, 240), i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at, i.is_locked, (i.is_locked = 1 OR EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1))";
+const ITEM_COLS: &str = "i.id, i.type, i.title, i.content, i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at, i.is_locked, EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1)";
+const LIST_ITEM_COLS: &str = "i.id, i.type, i.title, substr(i.content, 1, 240), i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at, i.is_locked, EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1)";
 
 /// Fill `tags` and `collections` on a batch of items in 2 queries (no N+1).
 fn load_relations(conn: &Connection, items: &mut [Item]) -> rusqlite::Result<()> {
@@ -1421,6 +1528,11 @@ impl Library {
         item.collections.clear();
     }
 
+    fn redact_item_content(item: &mut Item) {
+        item.content.clear();
+        item.url.clear();
+    }
+
     pub fn init(app: &AppHandle) -> Result<Self, String> {
         let app_data = app.path().app_data_dir().map_err(map_err)?;
         let cache = app.path().app_cache_dir().map_err(map_err)?;
@@ -1608,10 +1720,10 @@ impl Library {
             if f.view == "favorites" {
                 sql.push_str(" AND i.is_favorite = 1");
                 if !unlocked {
-                    sql.push_str(&format!(" AND NOT {EFFECTIVE_ITEM_LOCK}"));
+                    sql.push_str(&format!(" AND NOT ({COLLECTION_ITEM_LOCK})"));
                 }
             } else if f.view == "recent" && !unlocked {
-                sql.push_str(&format!(" AND NOT {EFFECTIVE_ITEM_LOCK}"));
+                sql.push_str(&format!(" AND NOT ({COLLECTION_ITEM_LOCK})"));
             } else if f.view == "uncollected" {
                 sql.push_str(
                     " AND NOT EXISTS (SELECT 1 FROM item_collections ic WHERE ic.item_id = i.id)",
@@ -1682,7 +1794,7 @@ impl Library {
                 || !parsed.collections.is_empty()
                 || !parsed.dates.is_empty())
         {
-            sql.push_str(&format!(" AND NOT {EFFECTIVE_ITEM_LOCK}"));
+            sql.push_str(&format!(" AND NOT ({COLLECTION_ITEM_LOCK})"));
         }
         if let Some(fts) = &fts_query {
             if unlocked {
@@ -1779,7 +1891,11 @@ impl Library {
                     })
                     .flatten();
                 if locked {
-                    Self::redact_item(&mut item);
+                    if item.collection_locked {
+                        Self::redact_item(&mut item);
+                    } else {
+                        Self::redact_item_content(&mut item);
+                    }
                 }
                 ListEntry {
                     snippet,
@@ -1825,7 +1941,11 @@ impl Library {
         if !self.is_unlocked() {
             for attachment in &mut detail.attachments {
                 if attachment.effective_locked {
-                    Self::redact_item(attachment);
+                    if attachment.collection_locked {
+                        Self::redact_item(attachment);
+                    } else {
+                        Self::redact_item_content(attachment);
+                    }
                 }
             }
         }

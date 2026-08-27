@@ -47,6 +47,7 @@ const EMPTY_DETAIL: ItemDetail = {
     isFavorite: false,
     deletedAt: null,
     isLocked: false,
+    collectionLocked: false,
     effectiveLocked: false,
     tags: [],
     collections: [],
@@ -69,6 +70,7 @@ const summaryOf = (item: Item): ItemSummary => ({
   isFavorite: item.isFavorite,
   deletedAt: item.deletedAt,
   isLocked: item.isLocked,
+  collectionLocked: item.collectionLocked,
   effectiveLocked: item.effectiveLocked,
   tags: item.tags,
   collections: item.collections,
@@ -265,7 +267,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
       }
       const { selectedId, detail } = get();
       let next = detail;
-      if (selectedId && detail) {
+      if (selectedId) {
         next = await ipc.getItem(selectedId).catch(() => null) ?? detail;
       }
       if (request !== refreshRequest) return;

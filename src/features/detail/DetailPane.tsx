@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import {
   Check,
   ChevronDown,
-  Download,
   ExternalLink,
   File as FileIcon,
   Folder,
@@ -16,10 +15,8 @@ import {
   PanelLeftOpen,
   Star,
   Tags,
-  Trash2,
   X,
 } from "lucide-react";
-import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   convertFileSrc,
   ipc,
@@ -33,7 +30,6 @@ import {
   displayStem,
   fileExtension,
   isLargeTextFile,
-  isMediaFile,
   isSwitchableText,
   SWITCHABLE_FORMATS,
 } from "@/lib/file-types";
@@ -41,6 +37,7 @@ import { useLibrary } from "@/stores/library";
 import { useUi } from "@/stores/ui";
 import { cn } from "@/lib/utils";
 import { CollectionPicker } from "@/features/list/CollectionPicker";
+import { useItemActions } from "@/features/list/item-actions";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
@@ -739,6 +736,33 @@ function FilePreview({
   );
 }
 
+function DetailItemMenu({ item }: { item: Item }) {
+  const actions = useItemActions(item);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon-sm" aria-label="更多操作">
+          <MoreHorizontal className="size-4 text-muted-foreground" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-44">
+        {actions.map((action) => action.kind === "separator" ? (
+          <DropdownMenuSeparator key={action.key} />
+        ) : (
+          <DropdownMenuItem
+            key={action.key}
+            disabled={action.disabled}
+            variant={action.destructive ? "destructive" : "default"}
+            onSelect={() => void action.run?.()}
+          >
+            {action.icon}{action.label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 export function DetailPane() {
   const item = useLibrary((state) => state.detail?.item);
   const selectedId = useLibrary((state) => state.selectedId);
@@ -750,31 +774,6 @@ export function DetailPane() {
   const headerRef = useRef<HTMLDivElement | null>(null);
   useTitlebarDrag(headerRef);
   const [fileHeaderActions, setFileHeaderActions] = useState<HTMLDivElement | null>(null);
-
-  const exportItem = async () => {
-    if (!item || item.itemType === "link") return;
-    try {
-      const waits: Promise<void>[] = [];
-      window.dispatchEvent(new CustomEvent("nookspace:flush-edits", { detail: waits }));
-      await Promise.all(waits);
-
-      const stem = displayStem(item.title, item.storedPath)
-        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
-        .replace(/[. ]+$/g, "")
-        .trim();
-      const ext = fileExtension(item.storedPath || item.title);
-      const destination = await saveDialog({
-        title: "导出文件",
-        defaultPath: ext ? `${stem || "无标题"}.${ext}` : item.title,
-      });
-      if (!destination) return;
-
-      const exported = await ipc.exportItem(item.id, destination);
-      toast.success(`已导出：${exported}`);
-    } catch (error) {
-      toast.error(`导出失败：${String(error)}`);
-    }
-  };
 
   const isTrashed = item ? item.deletedAt !== null : false;
 
@@ -827,52 +826,7 @@ export function DetailPane() {
             />
           </Button>
         )}
-        {item && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-sm" aria-label="更多操作">
-                <MoreHorizontal className="size-4 text-muted-foreground" />
-              </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-44">
-            {item.itemType === "file" && (
-              <>
-                <DropdownMenuItem onSelect={() => void ipc.openWithDefault(item.id)}>
-                  <ExternalLink className="size-3.5" /> 用默认应用打开
-                </DropdownMenuItem>
-                {!isMediaFile(item.mime, item.storedPath || item.title) && (
-                  <DropdownMenuItem onSelect={() => void ipc.quicklook(item.id)}>
-                    <ImageIcon className="size-3.5" /> 系统快速查看
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuSeparator />
-              </>
-            )}
-            {item.itemType === "link" && (
-              <DropdownMenuItem onSelect={() => void openUrl(item.url)}>
-                <ExternalLink className="size-3.5" /> 在浏览器中打开
-              </DropdownMenuItem>
-            )}
-            {item.itemType !== "link" && (
-              <>
-                <DropdownMenuItem onSelect={() => void exportItem()}>
-                  <Download className="size-3.5" /> 导出…
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-              </>
-            )}
-            <DropdownMenuItem
-              variant="destructive"
-              onSelect={() => {
-                void useLibrary.getState().deleteItems([item.id]);
-                toast.info("已移至回收站");
-              }}
-            >
-              <Trash2 className="size-3.5" /> 移到回收站
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        )}
+        {item && <DetailItemMenu item={item} />}
       </div>
 
       {!item ? (
@@ -889,11 +843,9 @@ export function DetailPane() {
               <p className="text-[13px] font-medium">此内容已锁定</p>
               <p className="mt-1 font-mono text-[11px] text-muted-foreground">使用 Touch ID 或系统密码解锁 5 分钟</p>
             </div>
-            <Button size="sm" onClick={() => {
-              void useLibrary.getState().unlockProtectedContent().then((unlocked) => {
-                if (unlocked) void useLibrary.getState().select(selectedId);
-              });
-            }}>解锁 5 分钟</Button>
+            <Button size="sm" onClick={() => void useLibrary.getState().unlockProtectedContent()}>
+              解锁 5 分钟
+            </Button>
           </div>
         ) : (
           <EmptyDetail />
