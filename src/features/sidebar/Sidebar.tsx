@@ -85,6 +85,7 @@ function SectionLabel({ children, onAdd }: { children: React.ReactNode; onAdd?: 
 function SidebarRow({
   active,
   onClick,
+  leading,
   icon,
   label,
   children,
@@ -92,6 +93,7 @@ function SidebarRow({
 }: {
   active: boolean;
   onClick: () => void;
+  leading?: React.ReactNode;
   icon?: React.ReactNode;
   label: React.ReactNode;
   children?: React.ReactNode;
@@ -111,6 +113,7 @@ function SidebarRow({
           : "text-foreground/80 hover:bg-accent/60 hover:text-foreground",
       )}
     >
+      {leading}
       {icon && <span className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-3.5">{icon}</span>}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {children}
@@ -236,22 +239,28 @@ function CollectionRows({
                     targetZone === "inside" && "bg-accent ring-1 ring-inset ring-primary/35",
                   )}
                 >
-                  {hasChildren ? (
-                    <button
-                      type="button"
-                      className="absolute top-1/2 z-10 flex size-5 -translate-y-1/2 items-center justify-center text-muted-foreground"
-                      style={{ left: depth * 12 - 10 }}
-                      onClick={() => onToggle(node.id)}
-                      aria-label={isCollapsed ? "展开集合" : "折叠集合"}
-                      aria-expanded={!isCollapsed}
-                    >
-                      {isCollapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
-                    </button>
-                  ) : null}
                   <div className="min-w-0 flex-1">
                     <SidebarRow
                       active={activeId === node.id}
                       onClick={() => useLibrary.getState().setView({ kind: "collection", id: node.id })}
+                      leading={
+                        hasChildren ? (
+                          <button
+                            type="button"
+                            className="-ml-1 -mr-1 flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onToggle(node.id);
+                            }}
+                            aria-label={isCollapsed ? "展开集合" : "折叠集合"}
+                            aria-expanded={!isCollapsed}
+                          >
+                            {isCollapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+                          </button>
+                        ) : (
+                          <span className="-ml-1 -mr-1 size-4 shrink-0" aria-hidden />
+                        )
+                      }
                       icon={<Folder />}
                       label={node.name}
                     />
