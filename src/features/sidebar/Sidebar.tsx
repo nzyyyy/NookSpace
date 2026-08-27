@@ -122,12 +122,14 @@ function CollectionRows({
   nodes,
   depth = 0,
   activeId,
+  renamingId,
   collapsed,
   draggedId,
   dropTarget,
   onToggle,
   onCreateChild,
   onRename,
+  onRenameEnd,
   onMove,
   onDelete,
   onDragStart,
@@ -138,12 +140,14 @@ function CollectionRows({
   nodes: CollectionTreeNode<Collection>[];
   depth?: number;
   activeId: string | null;
+  renamingId: string | null;
   collapsed: Set<string>;
   draggedId: string | null;
   dropTarget: CollectionDropTarget | null;
   onToggle: (id: string) => void;
   onCreateChild: (id: string) => void;
   onRename: (collection: Collection) => void;
+  onRenameEnd: () => void;
   onMove: (collection: Collection) => void;
   onDelete: (collection: Collection) => void;
   onDragStart: (id: string) => void;
@@ -155,7 +159,29 @@ function CollectionRows({
     const hasChildren = node.children.length > 0;
     const isCollapsed = collapsed.has(node.id);
     const isDragging = draggedId === node.id;
+    const isRenaming = renamingId === node.id;
     const targetZone = dropTarget?.target.id === node.id ? dropTarget.zone : null;
+    const childRows = hasChildren && !isCollapsed ? (
+      <CollectionRows
+        nodes={node.children}
+        depth={depth + 1}
+        activeId={activeId}
+        renamingId={renamingId}
+        collapsed={collapsed}
+        draggedId={draggedId}
+        dropTarget={dropTarget}
+        onToggle={onToggle}
+        onCreateChild={onCreateChild}
+        onRename={onRename}
+        onRenameEnd={onRenameEnd}
+        onMove={onMove}
+        onDelete={onDelete}
+        onDragStart={onDragStart}
+        onDragMove={onDragMove}
+        onDragEnd={onDragEnd}
+        onClickCapture={onClickCapture}
+      />
+    ) : null;
     return (
       <motion.div
         key={node.id}
@@ -163,97 +189,94 @@ function CollectionRows({
         layoutId={`collection-${node.id}`}
         transition={{ layout: { duration: 0.16, ease: [0.2, 0, 0, 1] } }}
       >
-        <ContextMenu>
-          <ContextMenuTrigger asChild>
-            <motion.div
-              data-collection-id={node.id}
-              drag="y"
-              dragMomentum={false}
-              dragSnapToOrigin
-              onDragStart={() => onDragStart(node.id)}
-              onDrag={(_, info) => onDragMove(node.id, info.point)}
-              onDragEnd={() => onDragEnd(node.id)}
-              onClickCapture={onClickCapture}
-              whileDrag={{ scale: 1.01 }}
-              className={cn(
-                "relative flex touch-none items-center cursor-grab select-none active:cursor-grabbing",
-                isDragging && "z-20 opacity-60 drop-shadow-sm",
-              )}
-              style={{ paddingLeft: depth * 12 }}
-            >
-              {targetZone && targetZone !== "inside" ? (
-                <span
-                  className={cn(
-                    "pointer-events-none absolute right-1 z-30 h-0.5 rounded-full bg-primary",
-                    targetZone === "before" ? "-top-px" : "-bottom-px",
-                  )}
-                  style={{ left: depth * 12 + 4 }}
-                />
-              ) : null}
-              <div
+        {isRenaming ? (
+          <div style={{ paddingLeft: depth * 12 }}>
+            <CreateInput
+              key={node.id}
+              initial={node.name}
+              placeholder="集合名称"
+              onConfirm={(name) => {
+                void useLibrary.getState().renameCollection(node.id, name);
+                onRenameEnd();
+              }}
+              onCancel={onRenameEnd}
+            />
+          </div>
+        ) : (
+          <ContextMenu>
+            <ContextMenuTrigger asChild>
+              <motion.div
+                data-collection-id={node.id}
+                drag="y"
+                dragMomentum={false}
+                dragSnapToOrigin
+                onDragStart={() => onDragStart(node.id)}
+                onDrag={(_, info) => onDragMove(node.id, info.point)}
+                onDragEnd={() => onDragEnd(node.id)}
+                onClickCapture={onClickCapture}
+                whileDrag={{ scale: 1.01 }}
                 className={cn(
-                  "flex min-w-0 flex-1 items-center rounded-md transition-[background-color,box-shadow] duration-100",
-                  targetZone === "inside" && "bg-accent ring-1 ring-inset ring-primary/35",
+                  "relative flex touch-none items-center cursor-grab select-none active:cursor-grabbing",
+                  isDragging && "z-20 opacity-60 drop-shadow-sm",
                 )}
+                style={{ paddingLeft: depth * 12 }}
               >
-                {hasChildren ? (
-                  <button
-                    type="button"
-                    className="absolute top-1/2 z-10 flex size-5 -translate-y-1/2 items-center justify-center text-muted-foreground"
-                    style={{ left: depth * 12 - 10 }}
-                    onClick={() => onToggle(node.id)}
-                    aria-label={isCollapsed ? "展开集合" : "折叠集合"}
-                    aria-expanded={!isCollapsed}
-                  >
-                    {isCollapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
-                  </button>
-                ) : null}
-                <div className="min-w-0 flex-1">
-                  <SidebarRow
-                    active={activeId === node.id}
-                    onClick={() => useLibrary.getState().setView({ kind: "collection", id: node.id })}
-                    icon={<Folder />}
-                    label={node.name}
+                {targetZone && targetZone !== "inside" ? (
+                  <span
+                    className={cn(
+                      "pointer-events-none absolute right-1 z-30 h-0.5 rounded-full bg-primary",
+                      targetZone === "before" ? "-top-px" : "-bottom-px",
+                    )}
+                    style={{ left: depth * 12 + 4 }}
                   />
+                ) : null}
+                <div
+                  className={cn(
+                    "flex min-w-0 flex-1 items-center rounded-md transition-[background-color,box-shadow] duration-100",
+                    targetZone === "inside" && "bg-accent ring-1 ring-inset ring-primary/35",
+                  )}
+                >
+                  {hasChildren ? (
+                    <button
+                      type="button"
+                      className="absolute top-1/2 z-10 flex size-5 -translate-y-1/2 items-center justify-center text-muted-foreground"
+                      style={{ left: depth * 12 - 10 }}
+                      onClick={() => onToggle(node.id)}
+                      aria-label={isCollapsed ? "展开集合" : "折叠集合"}
+                      aria-expanded={!isCollapsed}
+                    >
+                      {isCollapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+                    </button>
+                  ) : null}
+                  <div className="min-w-0 flex-1">
+                    <SidebarRow
+                      active={activeId === node.id}
+                      onClick={() => useLibrary.getState().setView({ kind: "collection", id: node.id })}
+                      icon={<Folder />}
+                      label={node.name}
+                    />
+                  </div>
                 </div>
-              </div>
-            </motion.div>
-          </ContextMenuTrigger>
-          <ContextMenuContent className="min-w-44">
-            <ContextMenuItem onSelect={() => onCreateChild(node.id)}>新建子集合</ContextMenuItem>
-            <ContextMenuItem disabled={index === 0} onSelect={() => {
-              const before = nodes[index - 1];
-              if (before) void useLibrary.getState().moveCollection(node.id, node.parentId, before.id);
-            }}>上移</ContextMenuItem>
-            <ContextMenuItem disabled={index === nodes.length - 1} onSelect={() => {
-              const before = nodes[index + 2]?.id ?? null;
-              void useLibrary.getState().moveCollection(node.id, node.parentId, before);
-            }}>下移</ContextMenuItem>
-            <ContextMenuItem onSelect={() => onMove(node)}>移动到…</ContextMenuItem>
-            <ContextMenuItem onSelect={() => onRename(node)}>重命名</ContextMenuItem>
-            <ContextMenuSeparator />
-            <ContextMenuItem variant="destructive" onSelect={() => onDelete(node)}>删除集合</ContextMenuItem>
-          </ContextMenuContent>
-        </ContextMenu>
-        {hasChildren && !isCollapsed ? (
-          <CollectionRows
-            nodes={node.children}
-            depth={depth + 1}
-            activeId={activeId}
-            collapsed={collapsed}
-            draggedId={draggedId}
-            dropTarget={dropTarget}
-            onToggle={onToggle}
-            onCreateChild={onCreateChild}
-            onRename={onRename}
-            onMove={onMove}
-            onDelete={onDelete}
-            onDragStart={onDragStart}
-            onDragMove={onDragMove}
-            onDragEnd={onDragEnd}
-            onClickCapture={onClickCapture}
-          />
-        ) : null}
+              </motion.div>
+            </ContextMenuTrigger>
+            <ContextMenuContent className="min-w-44">
+              <ContextMenuItem onSelect={() => onCreateChild(node.id)}>新建子集合</ContextMenuItem>
+              <ContextMenuItem disabled={index === 0} onSelect={() => {
+                const before = nodes[index - 1];
+                if (before) void useLibrary.getState().moveCollection(node.id, node.parentId, before.id);
+              }}>上移</ContextMenuItem>
+              <ContextMenuItem disabled={index === nodes.length - 1} onSelect={() => {
+                const before = nodes[index + 2]?.id ?? null;
+                void useLibrary.getState().moveCollection(node.id, node.parentId, before);
+              }}>下移</ContextMenuItem>
+              <ContextMenuItem onSelect={() => onMove(node)}>移动到…</ContextMenuItem>
+              <ContextMenuItem onSelect={() => onRename(node)}>重命名</ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem variant="destructive" onSelect={() => onDelete(node)}>删除集合</ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+        )}
+        {childRows}
       </motion.div>
     );
   });
@@ -261,14 +284,16 @@ function CollectionRows({
 
 function CreateInput({
   placeholder,
+  initial = "",
   onConfirm,
   onCancel,
 }: {
   placeholder: string;
+  initial?: string;
   onConfirm: (name: string) => void;
   onCancel: () => void;
 }) {
-  const [name, setName] = useState("");
+  const [name, setName] = useState(initial);
   return (
     <div className="flex items-center gap-1 px-2 pb-1">
       <Input
@@ -292,60 +317,7 @@ function CreateInput({
   );
 }
 
-function RenameDialog({
-  open,
-  title,
-  initial,
-  onClose,
-  onSubmit,
-}: {
-  open: boolean;
-  title: string;
-  initial: string;
-  onClose: () => void;
-  onSubmit: (name: string) => void;
-}) {
-  const [name, setName] = useState(initial);
-  return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle className="text-[15px] font-medium">{title}</DialogTitle>
-        </DialogHeader>
-        <Input
-          autoFocus
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && name.trim()) {
-              onSubmit(name.trim());
-              onClose();
-            }
-          }}
-        />
-        <DialogFooter>
-          <Button
-            size="sm"
-            onClick={() => {
-              if (name.trim()) {
-                onSubmit(name.trim());
-                onClose();
-              }
-            }}
-          >
-            确定
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-type RenameTarget =
-  | { kind: "collection"; id: string; name: string }
-  | { kind: "tag"; id: string; name: string }
-  | { kind: "saved"; id: string; name: string }
-  | null;
+type RenameTarget = { kind: "collection" | "tag" | "saved"; id: string } | null;
 
 export function Sidebar() {
   const {
@@ -357,7 +329,6 @@ export function Sidebar() {
     createCollection,
     moveCollection,
     deleteCollectionTree,
-    renameCollection,
     createTag,
     deleteTag,
     renameTag,
@@ -380,6 +351,15 @@ export function Sidebar() {
   const dragExcludedRef = useRef<Set<string>>(new Set());
   const suppressCollectionClickRef = useRef(false);
   useTitlebarDrag(headerRef);
+
+  const beginCreate = (next: { kind: "collection"; parentId: string | null } | { kind: "tag" }) => {
+    setRenameTarget(null);
+    setCreating(next);
+  };
+  const beginRename = (target: NonNullable<RenameTarget>) => {
+    setCreating(null);
+    setRenameTarget(target);
+  };
 
   const themeCycle: ThemePreference[] = ["system", "light", "dark"];
   const ThemeIcon = preference === "light" ? Sun : preference === "dark" ? Moon : Laptop;
@@ -517,41 +497,55 @@ export function Sidebar() {
           <>
             <SectionLabel>已保存</SectionLabel>
             <div className="flex flex-col gap-px">
-              {savedViews.map((saved) => (
-                <ContextMenu key={saved.id}>
-                  <ContextMenuTrigger asChild>
-                    <div>
-                      <SidebarRow
-                        active={view.kind === "saved" && view.id === saved.id}
-                        onClick={() => setView({ kind: "saved", id: saved.id })}
-                        icon={<Search />}
-                        label={saved.name}
-                      />
-                    </div>
-                  </ContextMenuTrigger>
-                  <ContextMenuContent className="min-w-40">
-                    <ContextMenuItem onSelect={() => setRenameTarget({ kind: "saved", id: saved.id, name: saved.name })}>
-                      重命名
-                    </ContextMenuItem>
-                    <ContextMenuSeparator />
-                    <ContextMenuItem variant="destructive" onSelect={() => void deleteSavedView(saved.id)}>
-                      删除保存搜索
-                    </ContextMenuItem>
-                  </ContextMenuContent>
-                </ContextMenu>
-              ))}
+              {savedViews.map((saved) =>
+                renameTarget?.kind === "saved" && renameTarget.id === saved.id ? (
+                  <CreateInput
+                    key={saved.id}
+                    initial={saved.name}
+                    placeholder="名称"
+                    onConfirm={(name) => {
+                      void renameSavedView(saved.id, name);
+                      setRenameTarget(null);
+                    }}
+                    onCancel={() => setRenameTarget(null)}
+                  />
+                ) : (
+                  <ContextMenu key={saved.id}>
+                    <ContextMenuTrigger asChild>
+                      <div>
+                        <SidebarRow
+                          active={view.kind === "saved" && view.id === saved.id}
+                          onClick={() => setView({ kind: "saved", id: saved.id })}
+                          icon={<Search />}
+                          label={saved.name}
+                        />
+                      </div>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent className="min-w-40">
+                      <ContextMenuItem onSelect={() => beginRename({ kind: "saved", id: saved.id })}>
+                        重命名
+                      </ContextMenuItem>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem variant="destructive" onSelect={() => void deleteSavedView(saved.id)}>
+                        删除保存搜索
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenu>
+                ),
+              )}
             </div>
           </>
         )}
 
         {/* Collections */}
-        <SectionLabel onAdd={() => setCreating({ kind: "collection", parentId: null })}>集合</SectionLabel>
+        <SectionLabel onAdd={() => beginCreate({ kind: "collection", parentId: null })}>集合</SectionLabel>
         <div className="flex flex-col gap-px">
           <MotionConfig reducedMotion="user">
             <LayoutGroup id="collection-tree">
               <CollectionRows
                 nodes={collectionTree}
                 activeId={activeCollectionId}
+                renamingId={renameTarget?.kind === "collection" ? renameTarget.id : null}
                 collapsed={collapsed}
                 draggedId={draggedCollectionId}
                 dropTarget={collectionDropTarget}
@@ -562,14 +556,15 @@ export function Sidebar() {
                   return next;
                 })}
                 onCreateChild={(parentId) => {
-                  setCreating({ kind: "collection", parentId });
+                  beginCreate({ kind: "collection", parentId });
                   setCollapsed((current) => {
                     const next = new Set(current);
                     next.delete(parentId);
                     return next;
                   });
                 }}
-                onRename={(collection) => setRenameTarget({ kind: "collection", id: collection.id, name: collection.name })}
+                onRename={(collection) => beginRename({ kind: "collection", id: collection.id })}
+                onRenameEnd={() => setRenameTarget(null)}
                 onMove={setMoveTarget}
                 onDelete={setDeleteTarget}
                 onDragStart={startCollectionDrag}
@@ -598,43 +593,56 @@ export function Sidebar() {
         </div>
 
         {/* Tags */}
-        <SectionLabel onAdd={() => setCreating({ kind: "tag" })}>标签</SectionLabel>
+        <SectionLabel onAdd={() => beginCreate({ kind: "tag" })}>标签</SectionLabel>
         <div className="flex flex-col gap-px">
-          {tags.map((t) => (
-            <ContextMenu key={t.id}>
-              <ContextMenuTrigger asChild>
-                <div>
-                  <SidebarRow
-                    active={view.kind === "tag" && view.id === t.id}
-                    onClick={() => setView({ kind: "tag", id: t.id })}
-                    icon={t.color ? <span className={cn("size-2.5 rounded-full", tagDotClass(t.color))} /> : undefined}
-                    label={t.name}
-                  />
-                </div>
-              </ContextMenuTrigger>
-              <ContextMenuContent className="min-w-40">
-                <ContextMenuItem onSelect={() => setRenameTarget({ kind: "tag", id: t.id, name: t.name })}>
-                  重命名
-                </ContextMenuItem>
-                <ContextMenuSub>
-                  <ContextMenuSubTrigger>颜色</ContextMenuSubTrigger>
-                  <ContextMenuSubContent className="min-w-32">
-                    {TAG_COLORS.map((color) => (
-                      <ContextMenuItem key={color.value} onSelect={() => void setTagColor(t.id, color.value)}>
-                        <span className={cn("size-2.5 rounded-full", color.dot)} /> {color.label}
-                      </ContextMenuItem>
-                    ))}
-                    <ContextMenuSeparator />
-                    <ContextMenuItem onSelect={() => void setTagColor(t.id, null)}>清除颜色</ContextMenuItem>
-                  </ContextMenuSubContent>
-                </ContextMenuSub>
-                <ContextMenuSeparator />
-                <ContextMenuItem variant="destructive" onSelect={() => void deleteTag(t.id)}>
-                  删除标签
-                </ContextMenuItem>
-              </ContextMenuContent>
-            </ContextMenu>
-          ))}
+          {tags.map((t) =>
+            renameTarget?.kind === "tag" && renameTarget.id === t.id ? (
+              <CreateInput
+                key={t.id}
+                initial={t.name}
+                placeholder="标签名称"
+                onConfirm={(name) => {
+                  void renameTag(t.id, name);
+                  setRenameTarget(null);
+                }}
+                onCancel={() => setRenameTarget(null)}
+              />
+            ) : (
+              <ContextMenu key={t.id}>
+                <ContextMenuTrigger asChild>
+                  <div>
+                    <SidebarRow
+                      active={view.kind === "tag" && view.id === t.id}
+                      onClick={() => setView({ kind: "tag", id: t.id })}
+                      icon={t.color ? <span className={cn("size-2.5 rounded-full", tagDotClass(t.color))} /> : undefined}
+                      label={t.name}
+                    />
+                  </div>
+                </ContextMenuTrigger>
+                <ContextMenuContent className="min-w-40">
+                  <ContextMenuItem onSelect={() => beginRename({ kind: "tag", id: t.id })}>
+                    重命名
+                  </ContextMenuItem>
+                  <ContextMenuSub>
+                    <ContextMenuSubTrigger>颜色</ContextMenuSubTrigger>
+                    <ContextMenuSubContent className="min-w-32">
+                      {TAG_COLORS.map((color) => (
+                        <ContextMenuItem key={color.value} onSelect={() => void setTagColor(t.id, color.value)}>
+                          <span className={cn("size-2.5 rounded-full", color.dot)} /> {color.label}
+                        </ContextMenuItem>
+                      ))}
+                      <ContextMenuSeparator />
+                      <ContextMenuItem onSelect={() => void setTagColor(t.id, null)}>清除颜色</ContextMenuItem>
+                    </ContextMenuSubContent>
+                  </ContextMenuSub>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem variant="destructive" onSelect={() => void deleteTag(t.id)}>
+                    删除标签
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
+            ),
+          )}
           {creating?.kind === "tag" && (
             <CreateInput
               placeholder="标签名称"
@@ -667,19 +675,6 @@ export function Sidebar() {
         />
         <SidebarRow active={false} onClick={() => setSettingsOpen(true)} icon={<Settings />} label="设置" />
       </div>
-
-      <RenameDialog
-        open={renameTarget !== null}
-        title={renameTarget?.kind === "collection" ? "重命名集合" : renameTarget?.kind === "tag" ? "重命名标签" : "重命名保存搜索"}
-        initial={renameTarget?.name ?? ""}
-        onClose={() => setRenameTarget(null)}
-        onSubmit={(name) => {
-          if (!renameTarget) return;
-          if (renameTarget.kind === "collection") void renameCollection(renameTarget.id, name);
-          else if (renameTarget.kind === "tag") void renameTag(renameTarget.id, name);
-          else void renameSavedView(renameTarget.id, name);
-        }}
-      />
 
       <Dialog open={moveTarget !== null} onOpenChange={(open) => !open && setMoveTarget(null)}>
         <DialogContent className="max-w-sm">
