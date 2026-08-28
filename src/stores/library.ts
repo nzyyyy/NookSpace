@@ -195,9 +195,9 @@ export const useLibrary = create<LibraryState>((set, get) => {
     }
   };
 
-  const ensureItemUnlocked = async (id: string) => {
+  const itemRequiresUnlock = (id: string) => {
     const item = get().items.find((candidate) => candidate.id === id);
-    return !item?.effectiveLocked || get().lockSession.unlocked || get().unlockProtectedContent();
+    return Boolean(item?.effectiveLocked && !get().lockSession.unlocked);
   };
 
   return {
@@ -268,7 +268,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
       }
       const { selectedId, detail } = get();
       let next = detail;
-      if (selectedId) {
+      if (selectedId && !itemRequiresUnlock(selectedId)) {
         next = await ipc.getItem(selectedId).catch(() => null) ?? detail;
       }
       if (request !== refreshRequest) return;
@@ -291,15 +291,6 @@ export const useLibrary = create<LibraryState>((set, get) => {
     },
 
     setView: (view) => {
-      if (view.kind === "collection") {
-        const collection = get().collections.find((item) => item.id === view.id);
-        if (collection?.effectiveLocked && !get().lockSession.unlocked) {
-          void get().unlockProtectedContent().then((unlocked) => {
-            if (unlocked) get().setView(view);
-          });
-          return;
-        }
-      }
       const saved = view.kind === "saved" ? get().savedViews.find((item) => item.id === view.id) : null;
       set({
         view,
@@ -330,14 +321,16 @@ export const useLibrary = create<LibraryState>((set, get) => {
         set({ selectedId: null, detail: null, noteMode: "read" });
         return;
       }
-      if (!(await ensureItemUnlocked(id))) return;
+      if (itemRequiresUnlock(id)) {
+        set({ selectedId: id, multiIds: [], multiAnchor: null, detail: null, detailLoading: false, noteMode: "read" });
+        return;
+      }
       set({ selectedId: id, multiIds: [], multiAnchor: null, detailLoading: true, noteMode: "read" });
       const detail = await ipc.getItem(id).catch(() => null);
       set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
     },
 
     toggleMulti: async (id, additive, range) => {
-      if (!(await ensureItemUnlocked(id))) return;
       const { multiIds, multiAnchor, items } = get();
       if (additive) {
         const next = multiIds.includes(id)
@@ -347,6 +340,10 @@ export const useLibrary = create<LibraryState>((set, get) => {
         if (next.length === 0) set({ selectedId: null, detail: null });
         else if (next.length === 1) {
           set({ selectedId: next[0], noteMode: "read" });
+          if (itemRequiresUnlock(next[0])) {
+            set({ detail: null, detailLoading: false });
+            return;
+          }
           const detail = await ipc.getItem(next[0]).catch(() => null);
           set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
         }
@@ -363,6 +360,10 @@ export const useLibrary = create<LibraryState>((set, get) => {
         }
       }
       set({ selectedId: id, multiIds: [], multiAnchor: id, noteMode: "read" });
+      if (itemRequiresUnlock(id)) {
+        set({ detail: null, detailLoading: false });
+        return;
+      }
       const detail = await ipc.getItem(id).catch(() => null);
       set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
     },
@@ -370,7 +371,10 @@ export const useLibrary = create<LibraryState>((set, get) => {
     clearMulti: () => set({ multiIds: [], multiAnchor: null }),
 
     openItem: async (id) => {
-      if (!(await ensureItemUnlocked(id))) return;
+      if (itemRequiresUnlock(id)) {
+        set({ selectedId: id, detail: null, detailLoading: false, noteMode: "read" });
+        return;
+      }
       set({ selectedId: id, detailLoading: true });
       void ipc.touchItem(id);
       const detail = await ipc.getItem(id).catch(() => null);
