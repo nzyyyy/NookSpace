@@ -161,8 +161,8 @@ export type TextFileWriteResult =
 export const ipc = {
   getLockSession: () => invoke<LockSession>("get_lock_session"),
 
-  unlockProtectedContent: () =>
-    invoke<LockSession>("unlock_protected_content"),
+  unlockProtectedContent: (minutes: number) =>
+    invoke<LockSession>("unlock_protected_content", { minutes }),
 
   lockNow: () => invoke<void>("lock_now"),
 

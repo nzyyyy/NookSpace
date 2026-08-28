@@ -26,11 +26,14 @@ pub async fn get_lock_session(state: State<'_, Library>) -> Result<LockSession, 
 }
 
 #[tauri::command]
-pub async fn unlock_protected_content(state: State<'_, Library>) -> Result<LockSession, String> {
+pub async fn unlock_protected_content(
+    state: State<'_, Library>,
+    minutes: u64,
+) -> Result<LockSession, String> {
     let lib = state.inner().clone();
-    blocking(lib, |library| {
+    blocking(lib, move |library| {
         if auth::authenticate()? {
-            Ok(library.unlock_for_session())
+            library.unlock_for_session(minutes)
         } else {
             Ok(library.lock_session())
         }

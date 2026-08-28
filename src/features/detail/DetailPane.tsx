@@ -841,10 +841,10 @@ export function DetailPane() {
             </div>
             <div>
               <p className="text-[13px] font-medium">此内容已锁定</p>
-              <p className="mt-1 font-mono text-[11px] text-muted-foreground">使用 Touch ID 或系统密码解锁 5 分钟</p>
+              <p className="mt-1 font-mono text-[11px] text-muted-foreground">使用 Touch ID 或系统密码解锁</p>
             </div>
             <Button size="sm" onClick={() => void useLibrary.getState().unlockProtectedContent()}>
-              解锁 5 分钟
+              解锁
             </Button>
           </div>
         ) : (

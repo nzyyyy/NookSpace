@@ -285,7 +285,7 @@ function CollectionRows({
               <ContextMenuSeparator />
               {node.effectiveLocked && !useLibrary.getState().lockSession.unlocked ? (
                 <ContextMenuItem onSelect={() => void useLibrary.getState().unlockProtectedContent()}>
-                  <LockOpen className="size-3.5" /> 解锁 5 分钟
+                  <LockOpen className="size-3.5" /> 解锁
                 </ContextMenuItem>
               ) : null}
               <ContextMenuItem onSelect={() => void useLibrary.getState().setCollectionLocked(node.id, !node.isLocked)}>

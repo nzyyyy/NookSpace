@@ -54,7 +54,7 @@ export function useItemActions(item: Item | ItemSummary): ItemAction[] {
   if (protectedLocked) {
     add({
       key: "unlock",
-      label: "解锁 5 分钟",
+      label: "解锁",
       icon: <LockOpen className="size-3.5" />,
       run: () => useLibrary.getState().unlockProtectedContent(),
     });

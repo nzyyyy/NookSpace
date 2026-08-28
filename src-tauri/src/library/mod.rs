@@ -21,7 +21,6 @@ const FILES_DIR: &str = "files";
 const THUMB_DIR: &str = "thumb";
 const LOCATION_FILE: &str = "library-location";
 const TAG_COLORS: &[&str] = &["red", "orange", "amber", "green", "blue", "purple", "pink"];
-const UNLOCK_DURATION: Duration = Duration::from_secs(5 * 60);
 const LOCKED_ERROR: &str = "需要先解锁";
 
 /// The deep module: everything the app knows about its Library lives behind
@@ -245,7 +244,7 @@ mod tests {
             LOCKED_ERROR
         );
 
-        lib.unlock_for_session();
+        lib.unlock_for_session(10).unwrap();
         assert_eq!(
             lib.get_item(&item.id).unwrap().item.url,
             "https://example.test/hidden-token"
@@ -260,7 +259,7 @@ mod tests {
         *lib.unlocked_until.lock().unwrap() = Some(Instant::now() - Duration::from_secs(1));
         assert!(!lib.lock_session().unlocked);
         assert_eq!(lib.get_item(&item.id).unwrap_err(), LOCKED_ERROR);
-        lib.unlock_for_session();
+        lib.unlock_for_session(10).unwrap();
         lib.set_favorite(&item.id, true).unwrap();
         lib.set_collection_locked(&root.id, false).unwrap();
         lib.lock_now();
@@ -277,6 +276,17 @@ mod tests {
                 .unwrap_err(),
             LOCKED_ERROR
         );
+    }
+
+    #[test]
+    fn unlock_duration_is_applied_and_validated() {
+        let lib = library();
+        let session = lib.unlock_for_session(10).unwrap();
+        assert!(session.unlocked);
+        assert!(session.remaining_ms > 9 * 60 * 1_000);
+        assert!(session.remaining_ms <= 10 * 60 * 1_000);
+        assert!(lib.unlock_for_session(0).is_err());
+        assert!(lib.unlock_for_session(121).is_err());
     }
 
     #[test]
@@ -355,7 +365,7 @@ mod tests {
             LOCKED_ERROR
         );
 
-        lib.unlock_for_session();
+        lib.unlock_for_session(10).unwrap();
         assert_eq!(lib.get_item(&item.id).unwrap().item.content, "hidden body");
         lib.set_collection_locked(&collection.id, true).unwrap();
         lib.lock_now();
@@ -369,7 +379,7 @@ mod tests {
         assert!(inherited.item.mime.is_empty());
         assert!(inherited.item.tags.is_empty());
 
-        lib.unlock_for_session();
+        lib.unlock_for_session(10).unwrap();
         lib.set_collection_locked(&collection.id, false).unwrap();
         lib.lock_now();
         let direct_again = lib
@@ -817,7 +827,7 @@ mod tests {
         fs::remove_file(destination.join("occupied")).unwrap();
         lib.set_collection_locked(&collection.id, true).unwrap();
         assert_eq!(lib.move_library(&destination).unwrap_err(), LOCKED_ERROR);
-        lib.unlock_for_session();
+        lib.unlock_for_session(10).unwrap();
         let moved = PathBuf::from(lib.move_library(&destination).unwrap());
         assert_eq!(
             fs::read(moved.join("files/file/data.txt")).unwrap(),
@@ -1380,9 +1390,13 @@ impl Library {
         }
     }
 
-    pub fn unlock_for_session(&self) -> LockSession {
-        *self.unlocked_until.lock().unwrap() = Some(Instant::now() + UNLOCK_DURATION);
-        self.lock_session()
+    pub fn unlock_for_session(&self, minutes: u64) -> Result<LockSession, String> {
+        if !(1..=120).contains(&minutes) {
+            return Err("解锁时长必须是 1 到 120 分钟".into());
+        }
+        *self.unlocked_until.lock().unwrap() =
+            Some(Instant::now() + Duration::from_secs(minutes * 60));
+        Ok(self.lock_session())
     }
 
     pub fn lock_now(&self) {

@@ -17,6 +17,7 @@ import {
 import { collectionSubtreeIds } from "@/lib/collections";
 import { isLargeTextFile, isSwitchableText } from "@/lib/file-types";
 import { toast } from "sonner";
+import { getUnlockMinutes } from "@/lib/unlock-duration";
 
 export type View =
   | { kind: "all" }
@@ -396,7 +397,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
     },
 
     unlockProtectedContent: async () => {
-      const session = await ipc.unlockProtectedContent().catch((error) => {
+      const session = await ipc.unlockProtectedContent(getUnlockMinutes()).catch((error) => {
         toast.error(`解锁失败：${String(error)}`);
         return null;
       });

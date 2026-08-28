@@ -708,11 +708,11 @@ export function ItemList() {
                 这个集合已锁定。
               </p>
               <p className="mt-2 font-mono text-[12px] tracking-wide text-muted-foreground">
-                使用 Touch ID 或系统密码解锁 5 分钟
+                使用 Touch ID 或系统密码解锁
               </p>
             </div>
             <Button onClick={() => void unlockProtectedContent()}>
-              <LockOpen className="size-4" /> 解锁 5 分钟
+              <LockOpen className="size-4" /> 解锁
             </Button>
           </div>
         ) : items.length === 0 && !isTrash && !query ? (

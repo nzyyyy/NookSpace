@@ -15,6 +15,13 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import {
+  getUnlockMinutes,
+  isValidUnlockMinutes,
+  MAX_UNLOCK_MINUTES,
+  MIN_UNLOCK_MINUTES,
+  setUnlockMinutes,
+} from "@/lib/unlock-duration";
 
 const OPTIONS = [
   { value: "system", label: "跟随系统", icon: Laptop },
@@ -29,6 +36,7 @@ export function SettingsDialog() {
   const searchIndex = useLibrary((s) => s.searchIndex);
   const retryPdfIndex = useLibrary((s) => s.retryPdfIndex);
   const [busy, setBusy] = useState<string | null>(null);
+  const [unlockMinutes, setUnlockMinutesInput] = useState(() => String(getUnlockMinutes()));
 
   const flushEdits = async () => {
     const waits: Promise<void>[] = [];
@@ -80,6 +88,34 @@ export function SettingsDialog() {
                 </button>
               ))}
             </div>
+          </div>
+
+          <Separator />
+
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[12px] font-medium text-muted-foreground">解锁时长</p>
+              <p className="text-[11.5px] text-muted-foreground">下次解锁时生效</p>
+            </div>
+            <label className="flex items-center gap-2 text-[12px] text-muted-foreground">
+              <input
+                type="number"
+                min={MIN_UNLOCK_MINUTES}
+                max={MAX_UNLOCK_MINUTES}
+                step={1}
+                value={unlockMinutes}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  const minutes = Number(value);
+                  setUnlockMinutesInput(value);
+                  if (value.trim() && isValidUnlockMinutes(minutes)) setUnlockMinutes(minutes);
+                }}
+                onBlur={() => setUnlockMinutesInput(String(getUnlockMinutes()))}
+                className="h-8 w-20 rounded-md border border-input bg-transparent px-2 text-right text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                aria-label="解锁时长（分钟）"
+              />
+              分钟
+            </label>
           </div>
 
           <Separator />
