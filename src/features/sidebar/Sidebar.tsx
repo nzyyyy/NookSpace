@@ -15,6 +15,7 @@ import {
   Plus,
   Search,
   Settings,
+  Shield,
   Star,
   Sun,
   Trash2,
@@ -49,8 +50,9 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 
-const SMART_VIEWS: { kind: "favorites" | "recent" | "uncollected"; label: string; icon: typeof Star }[] = [
+const SMART_VIEWS: { kind: "favorites" | "privacy" | "recent" | "uncollected"; label: string; icon: typeof Star }[] = [
   { kind: "favorites", label: "收藏", icon: Star },
+  { kind: "privacy", label: "保险箱", icon: Shield },
   { kind: "recent", label: "最近", icon: Clock },
   { kind: "uncollected", label: "未分类", icon: Inbox },
 ];

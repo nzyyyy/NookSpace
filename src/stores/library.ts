@@ -22,6 +22,7 @@ import { getUnlockMinutes } from "@/lib/unlock-duration";
 export type View =
   | { kind: "all" }
   | { kind: "favorites" }
+  | { kind: "privacy" }
   | { kind: "recent" }
   | { kind: "uncollected" }
   | { kind: "trash" }
@@ -48,6 +49,7 @@ const EMPTY_DETAIL: ItemDetail = {
     isFavorite: false,
     deletedAt: null,
     isLocked: false,
+    isPrivate: false,
     collectionLocked: false,
     effectiveLocked: false,
     tags: [],
@@ -71,6 +73,7 @@ const summaryOf = (item: Item): ItemSummary => ({
   isFavorite: item.isFavorite,
   deletedAt: item.deletedAt,
   isLocked: item.isLocked,
+  isPrivate: item.isPrivate,
   collectionLocked: item.collectionLocked,
   effectiveLocked: item.effectiveLocked,
   tags: item.tags,
@@ -114,6 +117,7 @@ interface LibraryState {
   unlockProtectedContent: () => Promise<boolean>;
   lockNow: () => Promise<void>;
   setItemsLocked: (ids: string[], locked: boolean) => Promise<boolean>;
+  setItemsPrivate: (ids: string[], privateItem: boolean) => Promise<boolean>;
   setCollectionLocked: (id: string, locked: boolean) => Promise<boolean>;
 
   createNote: () => Promise<Item | null>;
@@ -432,6 +436,21 @@ export const useLibrary = create<LibraryState>((set, get) => {
       return true;
     },
 
+    setItemsPrivate: async (ids, privateItem) => {
+      if (!privateItem && !get().lockSession.unlocked && !(await get().unlockProtectedContent())) {
+        return false;
+      }
+      await flushEdits();
+      const changed = await ipc.setItemsPrivate(ids, privateItem).then(() => true).catch(() => false);
+      if (!changed) return false;
+      const selectedId = get().selectedId;
+      if (selectedId && ids.includes(selectedId)) {
+        set({ selectedId: null, detail: null, multiIds: [], multiAnchor: null, noteMode: "read" });
+      }
+      await get().refresh();
+      return true;
+    },
+
     setCollectionLocked: async (id, locked) => {
       if (!locked && !get().lockSession.unlocked && !(await get().unlockProtectedContent())) {
         return false;
@@ -557,7 +576,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
     createSavedView: async (name) => {
       const { view, query, sort, savedViews } = get();
       const active = view.kind === "saved" ? savedViews.find((item) => item.id === view.id) : null;
-      const baseView = active?.view ?? (view.kind === "saved" || view.kind === "trash" ? "all" : view.kind);
+      const baseView = active?.view ?? (view.kind === "saved" || view.kind === "trash" || view.kind === "privacy" ? "all" : view.kind);
       const saved = await ipc.createSavedView({
         name,
         query,

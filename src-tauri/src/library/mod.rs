@@ -279,6 +279,127 @@ mod tests {
     }
 
     #[test]
+    fn privacy_isolated_locked_and_forgets_collections() {
+        let (_temp, lib) = disk_library();
+        let first = lib.create_collection("First", None).unwrap();
+        let second = lib.create_collection("Second", None).unwrap();
+        let file = lib
+            .create_note(
+                "Secret file",
+                "private body",
+                &[first.id.clone(), second.id.clone()],
+            )
+            .unwrap();
+        let visible_parent = lib.create_note("Visible parent", "body", &[]).unwrap();
+        lib.add_attachments(&visible_parent.id, std::slice::from_ref(&file.id))
+            .unwrap();
+        let tag = lib.create_tag("Secret tag").unwrap();
+        lib.set_item_tags(&file.id, std::slice::from_ref(&tag.id))
+            .unwrap();
+        lib.set_favorite(&file.id, true).unwrap();
+        lib.set_items_locked(std::slice::from_ref(&file.id), true)
+            .unwrap();
+        lib.unlock_for_session(10).unwrap();
+        lib.set_items_private(std::slice::from_ref(&file.id), true)
+            .unwrap();
+        lib.lock_now();
+
+        let privacy = ListFilters {
+            view: "privacy".into(),
+            ..ListFilters::default()
+        };
+        assert!(lib.list_items(&privacy).unwrap().entries.is_empty());
+        assert!(!lib
+            .list_items(&ListFilters::default())
+            .unwrap()
+            .entries
+            .iter()
+            .any(|entry| entry.item.id == file.id));
+        assert!(lib
+            .list_items(&ListFilters {
+                view: "favorites".into(),
+                ..ListFilters::default()
+            })
+            .unwrap()
+            .entries
+            .is_empty());
+        assert!(lib
+            .list_items(&ListFilters {
+                tag_id: Some(tag.id.clone()),
+                ..ListFilters::default()
+            })
+            .unwrap()
+            .entries
+            .is_empty());
+        assert_eq!(lib.get_item(&file.id).unwrap_err(), LOCKED_ERROR);
+        assert_eq!(
+            lib.require_library_export_access().unwrap_err(),
+            LOCKED_ERROR
+        );
+
+        lib.unlock_for_session(10).unwrap();
+        let private = &lib.list_items(&privacy).unwrap().entries[0].item;
+        assert!(private.is_private && private.is_locked && private.effective_locked);
+        assert!(private.collections.is_empty());
+        assert_eq!(private.tags.len(), 1);
+        assert!(private.is_favorite);
+        assert!(lib
+            .add_items_to_collection(std::slice::from_ref(&file.id), &first.id)
+            .is_err());
+        assert!(lib
+            .get_item(&visible_parent.id)
+            .unwrap()
+            .attachments
+            .is_empty());
+        assert!(lib
+            .add_attachments(&visible_parent.id, std::slice::from_ref(&file.id))
+            .is_err());
+
+        let link = lib
+            .create_link("https://example.test", "Link", &[])
+            .unwrap();
+        assert!(lib
+            .set_items_private(std::slice::from_ref(&link.id), true)
+            .is_err());
+
+        lib.set_items_private(std::slice::from_ref(&file.id), false)
+            .unwrap();
+        let uncollected = lib
+            .list_items(&ListFilters {
+                view: "uncollected".into(),
+                ..ListFilters::default()
+            })
+            .unwrap();
+        let moved = uncollected
+            .entries
+            .iter()
+            .find(|entry| entry.item.id == file.id)
+            .unwrap();
+        assert!(moved.item.is_locked && !moved.item.is_private);
+        assert!(moved.item.collections.is_empty());
+
+        let trashed = lib.create_note("Trash secret", "hidden", &[]).unwrap();
+        lib.set_items_private(std::slice::from_ref(&trashed.id), true)
+            .unwrap();
+        lib.delete_items(std::slice::from_ref(&trashed.id)).unwrap();
+        lib.lock_now();
+        let trash = lib
+            .list_items(&ListFilters {
+                view: "trash".into(),
+                ..ListFilters::default()
+            })
+            .unwrap();
+        let redacted = trash
+            .entries
+            .iter()
+            .find(|entry| entry.item.id == trashed.id)
+            .unwrap();
+        assert!(redacted.item.is_private && redacted.item.effective_locked);
+        assert!(redacted.item.title.is_empty());
+        assert!(redacted.item.content_preview.is_empty());
+    }
+
+    #[test]
     fn unlock_duration_is_applied_and_validated() {
         let lib = library();
         let session = lib.unlock_for_session(10).unwrap();
@@ -1286,6 +1407,7 @@ fn map_err(e: impl std::fmt::Display) -> String {
 fn row_to_item(row: &Row) -> rusqlite::Result<Item> {
     let is_locked = row.get::<_, i64>(13)? != 0;
     let collection_locked = row.get::<_, i64>(14)? != 0;
+    let is_private = row.get::<_, i64>(15)? != 0;
     Ok(Item {
         id: row.get(0)?,
         item_type: row.get(1)?,
@@ -1301,17 +1423,18 @@ fn row_to_item(row: &Row) -> rusqlite::Result<Item> {
         is_favorite: row.get::<_, i64>(11)? != 0,
         deleted_at: row.get(12)?,
         is_locked,
+        is_private,
         collection_locked,
-        effective_locked: is_locked || collection_locked,
+        effective_locked: is_locked || collection_locked || is_private,
         tags: Vec::new(),
         collections: Vec::new(),
     })
 }
 
 const COLLECTION_ITEM_LOCK: &str = "EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1)";
-const EFFECTIVE_ITEM_LOCK: &str = "(i.is_locked = 1 OR EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1))";
-const ITEM_COLS: &str = "i.id, i.type, i.title, i.content, i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at, i.is_locked, EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1)";
-const LIST_ITEM_COLS: &str = "i.id, i.type, i.title, substr(i.content, 1, 240), i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at, i.is_locked, EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1)";
+const EFFECTIVE_ITEM_LOCK: &str = "(i.is_locked = 1 OR i.is_private = 1 OR EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1))";
+const ITEM_COLS: &str = "i.id, i.type, i.title, i.content, i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at, i.is_locked, EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1), i.is_private";
+const LIST_ITEM_COLS: &str = "i.id, i.type, i.title, substr(i.content, 1, 240), i.url, i.stored_path, i.size, i.mime, i.created_at, i.updated_at, i.last_opened_at, i.is_favorite, i.deleted_at, i.is_locked, EXISTS (WITH RECURSIVE ancestors(id, parent_id, is_locked) AS (SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN item_collections ic ON ic.collection_id = c.id WHERE ic.item_id = i.id UNION SELECT c.id, c.parent_id, c.is_locked FROM collections c JOIN ancestors a ON a.parent_id = c.id) SELECT 1 FROM ancestors WHERE is_locked = 1), i.is_private";
 
 /// Fill `tags` and `collections` on a batch of items in 2 queries (no N+1).
 fn load_relations(conn: &Connection, items: &mut [Item]) -> rusqlite::Result<()> {
@@ -1515,7 +1638,7 @@ impl Library {
         let conn = self.db.lock().unwrap();
         let any_locked: bool = conn
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM items WHERE is_locked = 1) \
+                "SELECT EXISTS(SELECT 1 FROM items WHERE is_locked = 1 OR is_private = 1) \
                  OR EXISTS(SELECT 1 FROM collections WHERE is_locked = 1)",
                 [],
                 |row| row.get(0),
@@ -1729,8 +1852,13 @@ impl Library {
 
         if f.view == "trash" {
             sql.push_str(" AND i.deleted_at IS NOT NULL");
+        } else if f.view == "privacy" {
+            sql.push_str(" AND i.deleted_at IS NULL AND i.is_private = 1");
+            if !unlocked {
+                sql.push_str(" AND 0 = 1");
+            }
         } else {
-            sql.push_str(" AND i.deleted_at IS NULL");
+            sql.push_str(" AND i.deleted_at IS NULL AND i.is_private = 0");
             if f.view == "favorites" {
                 sql.push_str(" AND i.is_favorite = 1");
                 if !unlocked {
@@ -1878,7 +2006,7 @@ impl Library {
             let mut stmt = conn.prepare(&sql).map_err(map_err)?;
             let rows = stmt
                 .query_map(params_from_iter(params.iter().map(|b| b.as_ref())), |row| {
-                    Ok((row_to_item(row)?, row.get(15)?, row.get(16)?, row.get(17)?))
+                    Ok((row_to_item(row)?, row.get(16)?, row.get(17)?, row.get(18)?))
                 })
                 .map_err(map_err)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(map_err)?
@@ -1905,8 +2033,11 @@ impl Library {
                     })
                     .flatten();
                 if locked {
-                    if item.collection_locked {
+                    if item.collection_locked || item.is_private {
                         Self::redact_item(&mut item);
+                        if item.is_private {
+                            item.title.clear();
+                        }
                     } else {
                         Self::redact_item_content(&mut item);
                     }
@@ -1937,10 +2068,13 @@ impl Library {
             let sql = format!(
                 "SELECT {ITEM_COLS} FROM items i \
                  JOIN attachments a ON a.child_id = i.id \
-                 WHERE a.parent_id = ?1 ORDER BY a.position"
+                 WHERE a.parent_id = ?1 AND (?2 = 1 OR i.is_private = 0) \
+                 ORDER BY a.position"
             );
             let mut stmt = conn.prepare(&sql).map_err(map_err)?;
-            let rows = stmt.query_map(params![id], row_to_item).map_err(map_err)?;
+            let rows = stmt
+                .query_map(params![id, item.is_private], row_to_item)
+                .map_err(map_err)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(map_err)?
         };
         load_relations(conn, &mut attachments).map_err(map_err)?;
@@ -1955,8 +2089,11 @@ impl Library {
         if !self.is_unlocked() {
             for attachment in &mut detail.attachments {
                 if attachment.effective_locked {
-                    if attachment.collection_locked {
+                    if attachment.collection_locked || attachment.is_private {
                         Self::redact_item(attachment);
+                        if attachment.is_private {
+                            attachment.title.clear();
+                        }
                     } else {
                         Self::redact_item_content(attachment);
                     }
@@ -2407,6 +2544,48 @@ impl Library {
         Ok(())
     }
 
+    pub fn set_items_private(&self, ids: &[String], private: bool) -> Result<(), String> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.db.lock().unwrap();
+        self.require_items_access(&conn, ids)?;
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let eligible: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM items WHERE id IN ({placeholders}) \
+                     AND type = 'file' AND deleted_at IS NULL"
+                ),
+                params_from_iter(ids.iter()),
+                |row| row.get(0),
+            )
+            .map_err(map_err)?;
+        if eligible != ids.len() as i64 {
+            return Err("只有未删除的文件可以移入或移出保险箱".into());
+        }
+
+        let transaction = conn.transaction().map_err(map_err)?;
+        if private {
+            transaction
+                .execute(
+                    &format!("DELETE FROM item_collections WHERE item_id IN ({placeholders})"),
+                    params_from_iter(ids.iter()),
+                )
+                .map_err(map_err)?;
+        }
+        transaction
+            .execute(
+                &format!(
+                    "UPDATE items SET is_private = {} WHERE id IN ({placeholders})",
+                    if private { 1 } else { 0 }
+                ),
+                params_from_iter(ids.iter()),
+            )
+            .map_err(map_err)?;
+        transaction.commit().map_err(map_err)
+    }
+
     pub fn set_collection_locked(&self, id: &str, locked: bool) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
         if !locked {
@@ -2585,9 +2764,25 @@ impl Library {
         item_ids: &[String],
         collection_id: &str,
     ) -> Result<(), String> {
+        if item_ids.is_empty() {
+            return Ok(());
+        }
         let conn = self.db.lock().unwrap();
         self.require_items_access(&conn, item_ids)?;
         self.require_collection_access(&conn, collection_id)?;
+        let placeholders = vec!["?"; item_ids.len()].join(",");
+        let private: bool = conn
+            .query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM items WHERE is_private = 1 AND id IN ({placeholders}))"
+                ),
+                params_from_iter(item_ids.iter()),
+                |row| row.get(0),
+            )
+            .map_err(map_err)?;
+        if private {
+            return Err("保险箱内的文件不能加入集合".into());
+        }
         for item_id in item_ids {
             conn.execute(
                 "INSERT OR IGNORE INTO item_collections (item_id, collection_id) VALUES (?1, ?2)",
@@ -2749,11 +2944,11 @@ impl Library {
             let conn = self.db.lock().unwrap();
             self.require_item_access(&conn, parent_id)?;
             self.require_items_access(&conn, child_ids)?;
-            let parent: (String, String) = conn
+            let parent: (String, String, bool) = conn
                 .query_row(
-                    "SELECT type, stored_path FROM items WHERE id = ?1",
+                    "SELECT type, stored_path, is_private FROM items WHERE id = ?1",
                     params![parent_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .map_err(map_err)?;
             if parent.0 != "file" || !native::is_switchable_text(&parent.1) {
@@ -2763,15 +2958,18 @@ impl Library {
                 if child_id == parent_id {
                     continue;
                 }
-                let child_type: String = conn
+                let child: (String, bool) = conn
                     .query_row(
-                        "SELECT type FROM items WHERE id = ?1",
+                        "SELECT type, is_private FROM items WHERE id = ?1",
                         params![child_id],
-                        |r| r.get(0),
+                        |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .map_err(map_err)?;
-                if child_type != "file" {
+                if child.0 != "file" {
                     continue;
+                }
+                if child.1 && !parent.2 {
+                    return Err("保险箱内的文件不能挂到普通文件".into());
                 }
                 conn.execute(
                     "INSERT OR IGNORE INTO attachments (parent_id, child_id, position) \

@@ -803,7 +803,7 @@ export function DetailPane() {
         </h1>
         {item && (
           <>
-            <CollectionsEditor item={item} />
+            {!item.isPrivate && <CollectionsEditor item={item} />}
             <TagsEditor item={item} />
           </>
         )}

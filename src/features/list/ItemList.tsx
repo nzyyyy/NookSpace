@@ -83,6 +83,8 @@ function viewTitle(
       return "全部";
     case "favorites":
       return "收藏";
+    case "privacy":
+      return "保险箱";
     case "recent":
       return "最近";
     case "uncollected":
@@ -100,7 +102,7 @@ function viewTitle(
 
 function TypeIcon({ item, className }: { item: ItemSummary; className?: string }) {
   const unlocked = useLibrary((state) => state.lockSession.unlocked);
-  if (item.collectionLocked && !unlocked) return <Lock className={className} />;
+  if ((item.collectionLocked || item.isPrivate) && !unlocked) return <Lock className={className} />;
   if (item.itemType === "link") return <Link2 className={className} />;
   if (canonicalFormat(fileExtension(item.storedPath || item.title)) === "md") {
     return <FileText className={className} />;
@@ -157,7 +159,7 @@ function ItemRow({
 }) {
   const unlocked = useLibrary((state) => state.lockSession.unlocked);
   const protectedLocked = item.effectiveLocked && !unlocked;
-  const concealed = item.collectionLocked && !unlocked;
+  const concealed = (item.collectionLocked || item.isPrivate) && !unlocked;
   return (
     <div
       role="button"
@@ -244,7 +246,7 @@ function ItemCard({
   const [thumbnail, setThumbnail] = useState<string | null>(null);
   const unlocked = useLibrary((state) => state.lockSession.unlocked);
   const protectedLocked = item.effectiveLocked && !unlocked;
-  const concealed = item.collectionLocked && !unlocked;
+  const concealed = (item.collectionLocked || item.isPrivate) && !unlocked;
 
   useEffect(() => {
     if (protectedLocked) {
@@ -497,9 +499,12 @@ export function ItemList() {
 
   const title = viewTitle(view, collections, tags, savedViews);
   const isTrash = view.kind === "trash";
+  const isPrivacy = view.kind === "privacy";
   const collectionLocked = view.kind === "collection"
     && !lockSession.unlocked
     && collections.some((collection) => collection.id === view.id && collection.effectiveLocked);
+  const privacyLocked = isPrivacy && !lockSession.unlocked;
+  const viewLocked = collectionLocked || privacyLocked;
   const batch = multiIds;
   const batchSet = useMemo(() => new Set(batch), [batch]);
 
@@ -578,7 +583,7 @@ export function ItemList() {
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              <Popover>
+              {!isPrivacy && <Popover>
                 <PopoverTrigger asChild>
                   <Button variant="ghost" size="sm">
                     <Folder className="size-3.5" /> 集合
@@ -587,9 +592,9 @@ export function ItemList() {
                 <PopoverContent align="start" className="w-max min-w-32 max-w-48 p-1">
                   <CollectionPicker itemIds={batch} />
                 </PopoverContent>
-              </Popover>
+              </Popover>}
 
-              <Button
+              {!isPrivacy && <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => void setItemsLocked(batch, !batch.every((id) => items.find((item) => item.id === id)?.isLocked))}
@@ -598,7 +603,7 @@ export function ItemList() {
                   ? <LockOpen className="size-3.5" />
                   : <Lock className="size-3.5" />}
                 {batch.every((id) => items.find((item) => item.id === id)?.isLocked) ? "取消锁定" : "锁定"}
-              </Button>
+              </Button>}
 
               {isTrash ? (
                 <>
@@ -639,7 +644,7 @@ export function ItemList() {
             <h1 className="min-w-0 truncate text-[15px] font-medium tracking-tight">{title}</h1>
             <span className="font-mono text-[11px] text-muted-foreground">{items.length}</span>
             <div data-pane-spacer className="flex-1" />
-            {!isTrash && !collectionLocked && (
+            {!isTrash && !viewLocked && !isPrivacy && (
               <CreateMenu />
             )}
             {isTrash && (
@@ -665,12 +670,12 @@ export function ItemList() {
             id="list-search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={collectionLocked ? "集合已锁定" : "搜索标题、内容、文件名…"}
-            disabled={collectionLocked}
+            placeholder={privacyLocked ? "保险箱已锁定" : collectionLocked ? "集合已锁定" : "搜索标题、内容、文件名…"}
+            disabled={viewLocked}
             className="h-7 min-w-0 flex-1 text-[13px]"
           />
         )}
-        {!isTrash && query.trim() && (
+        {!isTrash && !isPrivacy && query.trim() && (
           <Button variant="ghost" size="icon-sm" onClick={() => {
             setSaveName(query.trim());
             setSaveOpen(true);
@@ -698,21 +703,21 @@ export function ItemList() {
             <Skeleton className="h-9 w-full" />
             <Skeleton className="h-9 w-4/5" />
           </div>
-        ) : collectionLocked ? (
+        ) : viewLocked ? (
           <div className="flex min-h-full flex-col items-center justify-center gap-4 px-10 py-16 text-center">
             <div className="flex size-12 items-center justify-center rounded-full bg-muted">
               <Lock className="size-5 text-muted-foreground" />
             </div>
             <div>
               <p className="font-display text-[24px] font-medium tracking-tight text-foreground/90 italic">
-                这个集合已锁定。
+                {privacyLocked ? "保险箱已锁定。" : "这个集合已锁定。"}
               </p>
               <p className="mt-2 font-mono text-[12px] tracking-wide text-muted-foreground">
                 使用 Touch ID 或系统密码解锁
               </p>
             </div>
             <Button onClick={() => void unlockProtectedContent()}>
-              <LockOpen className="size-4" /> 解锁
+              <LockOpen className="size-4" /> {privacyLocked ? "解锁保险箱" : "解锁"}
             </Button>
           </div>
         ) : items.length === 0 && !isTrash && !query ? (

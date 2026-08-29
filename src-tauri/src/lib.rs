@@ -35,6 +35,7 @@ pub fn run() {
             commands::unlock_protected_content,
             commands::lock_now,
             commands::set_items_locked,
+            commands::set_items_private,
             commands::set_collection_locked,
             commands::get_library_info,
             commands::list_items,

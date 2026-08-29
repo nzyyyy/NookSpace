@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Download, ExternalLink, Image as ImageIcon, Lock, LockOpen, Trash2 } from "lucide-react";
+import { Download, ExternalLink, Image as ImageIcon, Lock, LockOpen, Shield, ShieldOff, Trash2 } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ipc, type Item, type ItemSummary } from "@/core/ipc";
@@ -101,15 +101,30 @@ export function useItemActions(item: Item | ItemSummary): ItemAction[] {
     addSeparator();
   }
 
-  add({
-    key: "lock",
-    label: item.isLocked ? "取消锁定" : "锁定",
-    icon: item.isLocked ? <LockOpen className="size-3.5" /> : <Lock className="size-3.5" />,
-    disabled: protectedLocked,
-    run: () => useLibrary.getState().setItemsLocked([item.id], !item.isLocked),
-  });
-  if (item.collectionLocked) {
-    add({ key: "collection-lock", label: "由所属集合锁定", disabled: true });
+  if (item.itemType === "file" && !item.deletedAt) {
+    add({
+      key: "privacy",
+      label: item.isPrivate ? "移出保险箱" : "移入保险箱",
+      icon: item.isPrivate ? <ShieldOff className="size-3.5" /> : <Shield className="size-3.5" />,
+      disabled: protectedLocked,
+      run: async () => {
+        const changed = await useLibrary.getState().setItemsPrivate([item.id], !item.isPrivate);
+        if (changed) toast.success(item.isPrivate ? "已移出保险箱" : "已移入保险箱");
+        else toast.error(item.isPrivate ? "移出保险箱失败" : "移入保险箱失败");
+      },
+    });
+  }
+  if (!item.isPrivate) {
+    add({
+      key: "lock",
+      label: item.isLocked ? "取消锁定" : "锁定",
+      icon: item.isLocked ? <LockOpen className="size-3.5" /> : <Lock className="size-3.5" />,
+      disabled: protectedLocked,
+      run: () => useLibrary.getState().setItemsLocked([item.id], !item.isLocked),
+    });
+    if (item.collectionLocked) {
+      add({ key: "collection-lock", label: "由所属集合锁定", disabled: true });
+    }
   }
   addSeparator();
   add({

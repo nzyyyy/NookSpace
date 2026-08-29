@@ -37,6 +37,7 @@ export interface Item {
   isFavorite: boolean;
   deletedAt: string | null;
   isLocked: boolean;
+  isPrivate: boolean;
   collectionLocked: boolean;
   effectiveLocked: boolean;
   tags: Tag[];
@@ -58,6 +59,7 @@ export interface ItemSummary {
   isFavorite: boolean;
   deletedAt: string | null;
   isLocked: boolean;
+  isPrivate: boolean;
   collectionLocked: boolean;
   effectiveLocked: boolean;
   tags: Tag[];
@@ -80,7 +82,7 @@ export interface ItemDetail {
   attachments: Item[];
 }
 
-export type ViewKind = "all" | "favorites" | "recent" | "uncollected" | "trash";
+export type ViewKind = "all" | "favorites" | "privacy" | "recent" | "uncollected" | "trash";
 
 export interface ListFilters {
   view: ViewKind;
@@ -168,6 +170,9 @@ export const ipc = {
 
   setItemsLocked: (ids: string[], locked: boolean) =>
     invoke<void>("set_items_locked", { ids, locked }),
+
+  setItemsPrivate: (ids: string[], privateItem: boolean) =>
+    invoke<void>("set_items_private", { ids, private: privateItem }),
 
   setCollectionLocked: (id: string, locked: boolean) =>
     invoke<void>("set_collection_locked", { id, locked }),

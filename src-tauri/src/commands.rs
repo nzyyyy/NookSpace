@@ -62,6 +62,16 @@ pub async fn set_items_locked(
 }
 
 #[tauri::command]
+pub async fn set_items_private(
+    state: State<'_, Library>,
+    ids: Vec<String>,
+    private: bool,
+) -> Result<(), String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |library| library.set_items_private(&ids, private)).await
+}
+
+#[tauri::command]
 pub async fn set_collection_locked(
     state: State<'_, Library>,
     id: String,

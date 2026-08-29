@@ -271,7 +271,7 @@ impl Library {
 
             let mut items = Vec::new();
             let mut stmt = conn
-                .prepare("SELECT id, type, title, content, url, stored_path, size, mime, created_at, updated_at, last_opened_at, deleted_at, is_favorite, meta FROM items ORDER BY created_at")
+                .prepare("SELECT id, type, title, content, url, stored_path, size, mime, created_at, updated_at, last_opened_at, deleted_at, is_favorite, meta, is_private FROM items ORDER BY created_at")
                 .map_err(|error| error.to_string())?;
             let rows = stmt
                 .query_map([], |row| {
@@ -290,6 +290,7 @@ impl Library {
                         row.get::<_, Option<String>>(11)?,
                         row.get::<_, i64>(12)? != 0,
                         row.get::<_, String>(13)?,
+                        row.get::<_, i64>(14)? != 0,
                     ))
                 })
                 .map_err(|error| error.to_string())?;
@@ -309,6 +310,7 @@ impl Library {
                     deleted_at,
                     favorite,
                     meta,
+                    is_private,
                 ) = row.map_err(|error| error.to_string())?;
                 let bucket = if deleted_at.is_some() {
                     "Trash"
@@ -342,6 +344,7 @@ impl Library {
                     "size": size, "mime": mime, "createdAt": created_at,
                     "updatedAt": updated_at, "lastOpenedAt": last_opened_at,
                     "deletedAt": deleted_at, "isFavorite": favorite,
+                    "isPrivate": is_private,
                     "meta": meta,
                     "exportedPath": exported.to_string_lossy(),
                 }));

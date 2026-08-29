@@ -38,6 +38,7 @@ pub struct Item {
     pub is_favorite: bool,
     pub deleted_at: Option<String>,
     pub is_locked: bool,
+    pub is_private: bool,
     pub collection_locked: bool,
     pub effective_locked: bool,
     pub tags: Vec<Tag>,
@@ -61,6 +62,7 @@ pub struct ItemSummary {
     pub is_favorite: bool,
     pub deleted_at: Option<String>,
     pub is_locked: bool,
+    pub is_private: bool,
     pub collection_locked: bool,
     pub effective_locked: bool,
     pub tags: Vec<Tag>,
@@ -84,6 +86,7 @@ impl From<Item> for ItemSummary {
             is_favorite: item.is_favorite,
             deleted_at: item.deleted_at,
             is_locked: item.is_locked,
+            is_private: item.is_private,
             collection_locked: item.collection_locked,
             effective_locked: item.effective_locked,
             tags: item.tags,
@@ -117,7 +120,7 @@ pub struct ItemDetail {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListFilters {
-    /// "all" | "favorites" | "recent" | "uncollected" | "trash"
+    /// "all" | "favorites" | "privacy" | "recent" | "uncollected" | "trash"
     #[serde(default)]
     pub view: String,
     pub collection_id: Option<String>,

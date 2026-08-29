@@ -9,6 +9,8 @@ function copyFor(view: View): { title: string; subtitle: string } {
   switch (view.kind) {
     case "favorites":
       return { title: "还没有收藏任何内容。", subtitle: "点亮任意条目的星标，它就会出现在这里" };
+    case "privacy":
+      return { title: "保险箱里还没有文件。", subtitle: "从文件菜单选择“移入保险箱”" };
     case "recent":
       return { title: "最近使用过的东西会出现在这里。", subtitle: "打开或预览条目时自动记录" };
     case "uncollected":
@@ -61,7 +63,7 @@ export function EmptyState({ view }: { view: View }) {
         </p>
       </div>
 
-      <div className="flex gap-3">
+      {view.kind !== "privacy" && <div className="flex gap-3">
         <Button
           onClick={() => {
             void createNote().then((item) => item && toast.success("已新建笔记"));
@@ -72,14 +74,14 @@ export function EmptyState({ view }: { view: View }) {
         <Button variant="outline" onClick={() => void importFiles()}>
           <FolderOpen className="size-4" /> 导入文件
         </Button>
-      </div>
+      </div>}
 
-      <div className="flex items-center gap-2 rounded-lg border border-dashed border-border px-4 py-2.5">
+      {view.kind !== "privacy" && <div className="flex items-center gap-2 rounded-lg border border-dashed border-border px-4 py-2.5">
         <FilePlus2 className="size-4 text-muted-foreground" />
         <span className="text-[12.5px] text-muted-foreground">
           也可以直接把文件拖进来 —— 它们会被复制进资料库，原件不受影响
         </span>
-      </div>
+      </div>}
     </motion.div>
   );
 }
