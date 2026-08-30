@@ -510,7 +510,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
 
     moveCollection: async (id, parentId, beforeId) => {
       const moved = await ipc.moveCollection(id, parentId, beforeId).then(() => true).catch(() => false);
-      if (moved) await get().refreshMeta();
+      if (moved) await Promise.all([get().refresh(), get().refreshMeta()]);
       return moved;
     },
 

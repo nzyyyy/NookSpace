@@ -168,6 +168,7 @@ function CollectionRows({
     const isDragging = draggedId === node.id;
     const isRenaming = renamingId === node.id;
     const targetZone = dropTarget?.target.id === node.id ? dropTarget.zone : null;
+    const unlocked = useLibrary.getState().lockSession.unlocked;
     const childRows = hasChildren && !isCollapsed ? (
       <CollectionRows
         nodes={node.children}
@@ -265,7 +266,7 @@ function CollectionRows({
                           <span className="-ml-1 -mr-1 size-4 shrink-0" aria-hidden />
                         )
                       }
-                      icon={node.effectiveLocked ? <Lock /> : <Folder />}
+                      icon={node.effectiveLocked ? (unlocked ? <LockOpen /> : <Lock />) : <Folder />}
                       label={<span title={!node.isLocked && node.effectiveLocked ? "由上级集合锁定" : undefined}>{node.name}</span>}
                     />
                   </div>
@@ -285,11 +286,15 @@ function CollectionRows({
               <ContextMenuItem onSelect={() => onMove(node)}>移动到…</ContextMenuItem>
               <ContextMenuItem onSelect={() => onRename(node)}>重命名</ContextMenuItem>
               <ContextMenuSeparator />
-              {node.effectiveLocked && !useLibrary.getState().lockSession.unlocked ? (
+              {node.effectiveLocked ? (unlocked ? (
+                <ContextMenuItem onSelect={() => void useLibrary.getState().lockNow()}>
+                  <Lock className="size-3.5" /> 立即锁定
+                </ContextMenuItem>
+              ) : (
                 <ContextMenuItem onSelect={() => void useLibrary.getState().unlockProtectedContent()}>
                   <LockOpen className="size-3.5" /> 解锁
                 </ContextMenuItem>
-              ) : null}
+              )) : null}
               <ContextMenuItem onSelect={() => void useLibrary.getState().setCollectionLocked(node.id, !node.isLocked)}>
                 {node.isLocked ? <LockOpen className="size-3.5" /> : <Lock className="size-3.5" />}
                 {node.isLocked ? "取消锁定" : "锁定"}

@@ -411,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_item_lock_keeps_metadata_and_collection_lock_wins() {
+    fn collection_lock_replaces_direct_item_lock() {
         let (temp, lib) = disk_library();
         let collection = lib.create_collection("Private", None).unwrap();
         let item = lib
@@ -495,7 +495,7 @@ mod tests {
             .unwrap()
             .entries
             .remove(0);
-        assert!(inherited.item.is_locked && inherited.item.collection_locked);
+        assert!(!inherited.item.is_locked && inherited.item.collection_locked);
         assert_eq!(inherited.item.size, 0);
         assert!(inherited.item.mime.is_empty());
         assert!(inherited.item.tags.is_empty());
@@ -503,13 +503,51 @@ mod tests {
         lib.unlock_for_session(10).unwrap();
         lib.set_collection_locked(&collection.id, false).unwrap();
         lib.lock_now();
-        let direct_again = lib
+        let unlocked = lib
             .list_items(&ListFilters::default())
             .unwrap()
             .entries
             .remove(0);
-        assert!(direct_again.item.is_locked && !direct_again.item.collection_locked);
-        assert_eq!(direct_again.item.size, "hidden body".len() as i64);
+        assert!(!unlocked.item.is_locked && !unlocked.item.collection_locked);
+        assert!(!unlocked.item.effective_locked);
+        assert_eq!(unlocked.item.size, "hidden body".len() as i64);
+    }
+
+    #[test]
+    fn collection_lock_takes_over_on_membership_and_move() {
+        let lib = library();
+        let locked = lib.create_collection("Locked", None).unwrap();
+        lib.set_collection_locked(&locked.id, true).unwrap();
+
+        let added = lib.create_link("https://added.test", "Added", &[]).unwrap();
+        lib.set_items_locked(std::slice::from_ref(&added.id), true)
+            .unwrap();
+        lib.unlock_for_session(10).unwrap();
+        lib.add_items_to_collection(std::slice::from_ref(&added.id), &locked.id)
+            .unwrap();
+        let added = lib.get_item(&added.id).unwrap().item;
+        assert!(!added.is_locked && added.collection_locked);
+
+        let child = lib.create_collection("Child", None).unwrap();
+        let moved = lib
+            .create_link(
+                "https://moved.test",
+                "Moved",
+                std::slice::from_ref(&child.id),
+            )
+            .unwrap();
+        lib.set_items_locked(std::slice::from_ref(&moved.id), true)
+            .unwrap();
+        lib.unlock_for_session(10).unwrap();
+        lib.move_collection(&child.id, Some(&locked.id), None)
+            .unwrap();
+        let moved = lib.get_item(&moved.id).unwrap().item;
+        assert!(!moved.is_locked && moved.collection_locked);
+
+        lib.set_items_locked(std::slice::from_ref(&moved.id), true)
+            .unwrap();
+        assert!(lib.lock_session().unlocked);
+        assert!(!lib.get_item(&moved.id).unwrap().item.is_locked);
     }
 
     #[test]
@@ -588,6 +626,44 @@ mod tests {
                 "SELECT COUNT(*) FROM items_fts WHERE items_fts MATCH '\"legacy searchable\"'",
                 [],
                 |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn migration_removes_direct_locks_owned_by_collections() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        db::MIGRATIONS.to_version(&mut conn, 4).unwrap();
+        conn.execute_batch(
+            "INSERT INTO collections (id, name, position, created_at, is_locked) VALUES
+               ('locked', 'Locked', 0, '2025-01-01', 1),
+               ('child', 'Child', 0, '2025-01-01', 0);
+             UPDATE collections SET parent_id = 'locked' WHERE id = 'child';
+             INSERT INTO items (id, type, title, created_at, updated_at, is_locked) VALUES
+               ('owned', 'link', 'Owned', '2025-01-01', '2025-01-01', 1),
+               ('direct', 'link', 'Direct', '2025-01-01', '2025-01-01', 1);
+             INSERT INTO item_collections VALUES ('owned', 'child');",
+        )
+        .unwrap();
+
+        db::MIGRATIONS.to_latest(&mut conn).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT is_locked FROM items WHERE id = 'owned'",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT is_locked FROM items WHERE id = 'direct'",
+                [],
+                |row| { row.get::<_, i64>(0) }
             )
             .unwrap(),
             1
@@ -1552,6 +1628,20 @@ impl Library {
             |row| row.get(0),
         )
         .map_err(map_err)
+    }
+
+    fn clear_direct_locks_in_collection_tree(conn: &Connection, id: &str) -> Result<(), String> {
+        conn.execute(
+            "WITH RECURSIVE descendants(id) AS (\
+               SELECT id FROM collections WHERE id = ?1 \
+               UNION ALL SELECT c.id FROM collections c JOIN descendants d ON c.parent_id = d.id\
+             ) UPDATE items SET is_locked = 0 WHERE is_locked = 1 AND id IN (\
+               SELECT item_id FROM item_collections WHERE collection_id IN (SELECT id FROM descendants)\
+             )",
+            params![id],
+        )
+        .map_err(map_err)?;
+        Ok(())
     }
 
     fn require_items_access(&self, conn: &Connection, ids: &[String]) -> Result<(), String> {
@@ -2531,14 +2621,18 @@ impl Library {
             self.require_items_access(&conn, ids)?;
         }
         let placeholders = vec!["?"; ids.len()].join(",");
-        let sql = format!(
-            "UPDATE items SET is_locked = {} WHERE id IN ({placeholders})",
-            if locked { 1 } else { 0 }
-        );
-        conn.execute(&sql, params_from_iter(ids.iter()))
+        let sql = if locked {
+            format!(
+                "UPDATE items AS i SET is_locked = 1 WHERE id IN ({placeholders}) AND NOT ({COLLECTION_ITEM_LOCK})"
+            )
+        } else {
+            format!("UPDATE items SET is_locked = 0 WHERE id IN ({placeholders})")
+        };
+        let updated = conn
+            .execute(&sql, params_from_iter(ids.iter()))
             .map_err(map_err)?;
         drop(conn);
-        if locked {
+        if locked && updated > 0 {
             self.lock_now();
         }
         Ok(())
@@ -2587,11 +2681,12 @@ impl Library {
     }
 
     pub fn set_collection_locked(&self, id: &str, locked: bool) -> Result<(), String> {
-        let conn = self.db.lock().unwrap();
+        let mut conn = self.db.lock().unwrap();
         if !locked {
             self.require_collection_access(&conn, id)?;
         }
-        let updated = conn
+        let transaction = conn.transaction().map_err(map_err)?;
+        let updated = transaction
             .execute(
                 "UPDATE collections SET is_locked = ?1 WHERE id = ?2",
                 params![if locked { 1 } else { 0 }, id],
@@ -2600,6 +2695,8 @@ impl Library {
         if updated != 1 {
             return Err("集合不存在".into());
         }
+        Self::clear_direct_locks_in_collection_tree(&transaction, id)?;
+        transaction.commit().map_err(map_err)?;
         drop(conn);
         if locked {
             self.lock_now();
@@ -2651,6 +2748,7 @@ impl Library {
             .optional()
             .map_err(map_err)?
             .ok_or_else(|| "集合不存在".to_string())?;
+        let was_locked = Self::collection_effective_locked(&tx, id)?;
 
         if let Some(parent_id) = parent_id {
             let invalid: bool = tx
@@ -2725,6 +2823,9 @@ impl Library {
             )
             .map_err(map_err)?;
         }
+        if was_locked || Self::collection_effective_locked(&tx, id)? {
+            Self::clear_direct_locks_in_collection_tree(&tx, id)?;
+        }
         tx.commit().map_err(map_err)
     }
 
@@ -2767,9 +2868,10 @@ impl Library {
         if item_ids.is_empty() {
             return Ok(());
         }
-        let conn = self.db.lock().unwrap();
+        let mut conn = self.db.lock().unwrap();
         self.require_items_access(&conn, item_ids)?;
         self.require_collection_access(&conn, collection_id)?;
+        let collection_locked = Self::collection_effective_locked(&conn, collection_id)?;
         let placeholders = vec!["?"; item_ids.len()].join(",");
         let private: bool = conn
             .query_row(
@@ -2783,14 +2885,23 @@ impl Library {
         if private {
             return Err("保险箱内的文件不能加入集合".into());
         }
+        let transaction = conn.transaction().map_err(map_err)?;
         for item_id in item_ids {
-            conn.execute(
+            transaction.execute(
                 "INSERT OR IGNORE INTO item_collections (item_id, collection_id) VALUES (?1, ?2)",
                 params![item_id, collection_id],
             )
             .map_err(map_err)?;
         }
-        Ok(())
+        if collection_locked {
+            transaction
+                .execute(
+                    &format!("UPDATE items SET is_locked = 0 WHERE id IN ({placeholders})"),
+                    params_from_iter(item_ids.iter()),
+                )
+                .map_err(map_err)?;
+        }
+        transaction.commit().map_err(map_err)
     }
 
     pub fn remove_items_from_collection(

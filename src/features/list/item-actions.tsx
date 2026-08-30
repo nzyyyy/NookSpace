@@ -59,6 +59,14 @@ export function useItemActions(item: Item | ItemSummary): ItemAction[] {
       run: () => useLibrary.getState().unlockProtectedContent(),
     });
     addSeparator();
+  } else if (item.effectiveLocked) {
+    add({
+      key: "lock-now",
+      label: "立即锁定",
+      icon: <Lock className="size-3.5" />,
+      run: () => useLibrary.getState().lockNow(),
+    });
+    addSeparator();
   }
 
   if (item.itemType === "file") {
@@ -115,15 +123,16 @@ export function useItemActions(item: Item | ItemSummary): ItemAction[] {
     });
   }
   if (!item.isPrivate) {
-    add({
-      key: "lock",
-      label: item.isLocked ? "取消锁定" : "锁定",
-      icon: item.isLocked ? <LockOpen className="size-3.5" /> : <Lock className="size-3.5" />,
-      disabled: protectedLocked,
-      run: () => useLibrary.getState().setItemsLocked([item.id], !item.isLocked),
-    });
     if (item.collectionLocked) {
       add({ key: "collection-lock", label: "由所属集合锁定", disabled: true });
+    } else {
+      add({
+        key: "lock",
+        label: item.isLocked ? "取消锁定" : "锁定",
+        icon: item.isLocked ? <LockOpen className="size-3.5" /> : <Lock className="size-3.5" />,
+        disabled: protectedLocked,
+        run: () => useLibrary.getState().setItemsLocked([item.id], !item.isLocked),
+      });
     }
   }
   addSeparator();

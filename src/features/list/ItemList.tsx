@@ -506,6 +506,9 @@ export function ItemList() {
   const privacyLocked = isPrivacy && !lockSession.unlocked;
   const viewLocked = collectionLocked || privacyLocked;
   const batch = multiIds;
+  const lockableBatch = batch.filter((id) => !items.find((item) => item.id === id)?.collectionLocked);
+  const lockableBatchLocked = lockableBatch.length > 0
+    && lockableBatch.every((id) => items.find((item) => item.id === id)?.isLocked);
   const batchSet = useMemo(() => new Set(batch), [batch]);
 
   const handleActivate = (id: string) => (e: React.MouseEvent) => {
@@ -594,15 +597,15 @@ export function ItemList() {
                 </PopoverContent>
               </Popover>}
 
-              {!isPrivacy && <Button
+              {!isPrivacy && lockableBatch.length > 0 && <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => void setItemsLocked(batch, !batch.every((id) => items.find((item) => item.id === id)?.isLocked))}
+                onClick={() => void setItemsLocked(lockableBatch, !lockableBatchLocked)}
               >
-                {batch.every((id) => items.find((item) => item.id === id)?.isLocked)
+                {lockableBatchLocked
                   ? <LockOpen className="size-3.5" />
                   : <Lock className="size-3.5" />}
-                {batch.every((id) => items.find((item) => item.id === id)?.isLocked) ? "取消锁定" : "锁定"}
+                {lockableBatchLocked ? "取消锁定" : "锁定"}
               </Button>}
 
               {isTrash ? (

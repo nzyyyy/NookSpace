@@ -9,6 +9,7 @@ pub static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
         M::up(include_str!("migrations/002_v1.sql")),
         M::up(include_str!("migrations/003_locks.sql")),
         M::up(include_str!("migrations/004_privacy.sql")),
+        M::up(include_str!("migrations/005_collection_lock_ownership.sql")),
     ])
 });
 
