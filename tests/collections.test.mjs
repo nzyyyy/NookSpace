@@ -5,6 +5,7 @@ import {
   collectionPath,
   collectionSubtreeIds,
   flattenCollectionTree,
+  projectCollectionMove,
 } from "../src/lib/collections.ts";
 
 const collections = [
@@ -21,4 +22,19 @@ test("collection helpers preserve hierarchy and sibling order", () => {
   ]);
   assert.deepEqual(collectionPath(collections, "a2").map((item) => item.id), ["a", "a2"]);
   assert.deepEqual([...collectionSubtreeIds(collections, "a")].sort(), ["a", "a1", "a2"]);
+});
+
+test("collection move projection reorders and reparents without splitting subtrees", () => {
+  const before = projectCollectionMove(collections, "b", null, "a");
+  assert.deepEqual(flattenCollectionTree(buildCollectionTree(before)).map(({ collection }) => collection.id), ["b", "a", "a1", "a2"]);
+
+  const after = projectCollectionMove(collections, "a", null, null);
+  assert.deepEqual(flattenCollectionTree(buildCollectionTree(after)).map(({ collection }) => collection.id), ["b", "a", "a1", "a2"]);
+
+  const nested = projectCollectionMove(collections, "b", "a", "a2");
+  assert.deepEqual(flattenCollectionTree(buildCollectionTree(nested)).map(({ collection, depth }) => [collection.id, depth]), [
+    ["a", 0], ["a1", 1], ["b", 1], ["a2", 1],
+  ]);
+
+  assert.equal(projectCollectionMove(collections, "b", null, null), collections);
 });

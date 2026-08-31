@@ -40,6 +40,40 @@ export function flattenCollectionTree<T extends CollectionLike>(tree: Collection
   return result;
 }
 
+export function projectCollectionMove<T extends CollectionLike>(
+  collections: T[],
+  id: string,
+  parentId: string | null,
+  beforeId: string | null,
+): T[] {
+  const moving = collections.find((collection) => collection.id === id);
+  if (!moving || parentId === id || beforeId === id) return collections;
+
+  const target = collections
+    .filter((collection) => collection.parentId === parentId && collection.id !== id)
+    .sort(byPosition);
+  const insertAt = beforeId ? target.findIndex((collection) => collection.id === beforeId) : target.length;
+  if (insertAt < 0) return collections;
+  target.splice(insertAt, 0, moving);
+
+  const positions = new Map(target.map((collection, position) => [collection.id, { parentId, position }]));
+  if (moving.parentId !== parentId) {
+    collections
+      .filter((collection) => collection.parentId === moving.parentId && collection.id !== id)
+      .sort(byPosition)
+      .forEach((collection, position) => positions.set(collection.id, { parentId: moving.parentId, position }));
+  }
+
+  let changed = false;
+  const projected = collections.map((collection) => {
+    const next = positions.get(collection.id);
+    if (!next || (collection.parentId === next.parentId && collection.position === next.position)) return collection;
+    changed = true;
+    return { ...collection, ...next };
+  });
+  return changed ? projected : collections;
+}
+
 export function collectionSubtreeIds(collections: CollectionLike[], id: string): Set<string> {
   const children = new Map<string, string[]>();
   for (const collection of collections) {

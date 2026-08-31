@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import type { Collection } from "@/core/ipc";
 import { cn } from "@/lib/utils";
-import { buildCollectionTree, collectionPath, collectionSubtreeIds, flattenCollectionTree, type CollectionTreeNode } from "@/lib/collections";
+import { buildCollectionTree, collectionPath, collectionSubtreeIds, flattenCollectionTree, projectCollectionMove, type CollectionTreeNode } from "@/lib/collections";
 import { TAG_COLORS, tagDotClass } from "@/lib/tag-colors";
 import { useLibrary } from "@/stores/library";
 import { useTheme, type ThemePreference } from "@/stores/theme";
@@ -62,7 +62,8 @@ type CollectionDropZone = "before" | "inside" | "after";
 interface CollectionDropTarget {
   target: Collection;
   zone: CollectionDropZone;
-  siblings: Collection[];
+  parentId: string | null;
+  beforeId: string | null;
 }
 
 function SectionLabel({ children, onAdd }: { children: React.ReactNode; onAdd?: () => void }) {
@@ -162,58 +163,37 @@ function CollectionRows({
   onDragEnd: (id: string) => void;
   onClickCapture: (event: React.MouseEvent) => void;
 }) {
-  return nodes.map((node, index) => {
+  const rows: React.ReactNode[] = [];
+  const renderNodes = (currentNodes: CollectionTreeNode<Collection>[], currentDepth: number) => currentNodes.forEach((node, index) => {
     const hasChildren = node.children.length > 0;
     const isCollapsed = collapsed.has(node.id);
     const isDragging = draggedId === node.id;
     const isRenaming = renamingId === node.id;
     const targetZone = dropTarget?.target.id === node.id ? dropTarget.zone : null;
     const unlocked = useLibrary.getState().lockSession.unlocked;
-    const childRows = hasChildren && !isCollapsed ? (
-      <CollectionRows
-        nodes={node.children}
-        depth={depth + 1}
-        activeId={activeId}
-        renamingId={renamingId}
-        collapsed={collapsed}
-        draggedId={draggedId}
-        dropTarget={dropTarget}
-        onToggle={onToggle}
-        onCreateChild={onCreateChild}
-        onRename={onRename}
-        onRenameEnd={onRenameEnd}
-        onMove={onMove}
-        onDelete={onDelete}
-        onDragStart={onDragStart}
-        onDragMove={onDragMove}
-        onDragEnd={onDragEnd}
-        onClickCapture={onClickCapture}
-      />
-    ) : null;
-    return (
+    rows.push(isRenaming ? (
       <motion.div
         key={node.id}
         layout="position"
-        layoutId={`collection-${node.id}`}
         transition={{ layout: { duration: 0.16, ease: [0.2, 0, 0, 1] } }}
+        style={{ paddingLeft: currentDepth * 12 }}
       >
-        {isRenaming ? (
-          <div style={{ paddingLeft: depth * 12 }}>
-            <CreateInput
-              key={node.id}
-              initial={node.name}
-              placeholder="集合名称"
-              onConfirm={(name) => {
-                void useLibrary.getState().renameCollection(node.id, name);
-                onRenameEnd();
-              }}
-              onCancel={onRenameEnd}
-            />
-          </div>
-        ) : (
-          <ContextMenu>
+        <CreateInput
+          initial={node.name}
+          placeholder="集合名称"
+          onConfirm={(name) => {
+            void useLibrary.getState().renameCollection(node.id, name);
+            onRenameEnd();
+          }}
+          onCancel={onRenameEnd}
+        />
+      </motion.div>
+    ) : (
+          <ContextMenu key={node.id}>
             <ContextMenuTrigger asChild>
               <motion.div
+                layout="position"
+                transition={{ layout: { duration: 0.16, ease: [0.2, 0, 0, 1] } }}
                 data-collection-id={node.id}
                 drag="y"
                 dragMomentum={false}
@@ -222,22 +202,12 @@ function CollectionRows({
                 onDrag={(_, info) => onDragMove(node.id, info.point)}
                 onDragEnd={() => onDragEnd(node.id)}
                 onClickCapture={onClickCapture}
-                whileDrag={{ scale: 1.01 }}
                 className={cn(
                   "group/collection-menu relative flex touch-none items-center cursor-grab select-none active:cursor-grabbing",
-                  isDragging && "z-20 opacity-60 drop-shadow-sm",
+                  isDragging && "z-20 opacity-60",
                 )}
-                style={{ paddingLeft: depth * 12 }}
+                style={{ paddingLeft: currentDepth * 12 }}
               >
-                {targetZone && targetZone !== "inside" ? (
-                  <span
-                    className={cn(
-                      "pointer-events-none absolute right-1 z-30 h-0.5 rounded-full bg-primary",
-                      targetZone === "before" ? "-top-px" : "-bottom-px",
-                    )}
-                    style={{ left: depth * 12 + 4 }}
-                  />
-                ) : null}
                 <div
                   className={cn(
                     "flex min-w-0 flex-1 items-center rounded-md transition-[background-color,box-shadow] duration-100 group-data-[state=open]/collection-menu:bg-accent",
@@ -276,11 +246,11 @@ function CollectionRows({
             <ContextMenuContent className="min-w-44">
               <ContextMenuItem onSelect={() => onCreateChild(node.id)}>新建子集合</ContextMenuItem>
               <ContextMenuItem disabled={index === 0} onSelect={() => {
-                const before = nodes[index - 1];
+                const before = currentNodes[index - 1];
                 if (before) void useLibrary.getState().moveCollection(node.id, node.parentId, before.id);
               }}>上移</ContextMenuItem>
-              <ContextMenuItem disabled={index === nodes.length - 1} onSelect={() => {
-                const before = nodes[index + 2]?.id ?? null;
+              <ContextMenuItem disabled={index === currentNodes.length - 1} onSelect={() => {
+                const before = currentNodes[index + 2]?.id ?? null;
                 void useLibrary.getState().moveCollection(node.id, node.parentId, before);
               }}>下移</ContextMenuItem>
               <ContextMenuItem onSelect={() => onMove(node)}>移动到…</ContextMenuItem>
@@ -306,11 +276,11 @@ function CollectionRows({
               <ContextMenuItem variant="destructive" onSelect={() => onDelete(node)}>删除集合</ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
-        )}
-        {childRows}
-      </motion.div>
-    );
+    ));
+    if (hasChildren && !isCollapsed) renderNodes(node.children, currentDepth + 1);
   });
+  renderNodes(nodes, depth);
+  return rows;
 }
 
 function CreateInput({
@@ -377,10 +347,15 @@ export function Sidebar() {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [draggedCollectionId, setDraggedCollectionId] = useState<string | null>(null);
   const [collectionDropTarget, setCollectionDropTarget] = useState<CollectionDropTarget | null>(null);
+  const [previewCollections, setPreviewCollections] = useState<Collection[] | null>(null);
   const headerRef = useRef<HTMLDivElement | null>(null);
+  const collectionListRef = useRef<HTMLDivElement | null>(null);
   const draggedCollectionIdRef = useRef<string | null>(null);
   const collectionDropTargetRef = useRef<CollectionDropTarget | null>(null);
+  const dragCollectionsRef = useRef<Collection[]>([]);
   const dragExcludedRef = useRef<Set<string>>(new Set());
+  const collectionInsideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const collectionInsideCandidateRef = useRef<{ targetId: string; point: { x: number; y: number } } | null>(null);
   const suppressCollectionClickRef = useRef(false);
   useTitlebarDrag(headerRef);
 
@@ -395,9 +370,10 @@ export function Sidebar() {
 
   const themeCycle: ThemePreference[] = ["system", "light", "dark"];
   const ThemeIcon = preference === "light" ? Sun : preference === "dark" ? Moon : Laptop;
-  const collectionTree = useMemo(() => buildCollectionTree(collections), [collections]);
+  const displayedCollections = previewCollections ?? collections;
+  const collectionTree = useMemo(() => buildCollectionTree(displayedCollections), [displayedCollections]);
   const flatCollections = useMemo(() => flattenCollectionTree(collectionTree), [collectionTree]);
-  const collectionsById = useMemo(() => new Map(collections.map((collection) => [collection.id, collection])), [collections]);
+  const collectionsById = useMemo(() => new Map(displayedCollections.map((collection) => [collection.id, collection])), [displayedCollections]);
   const collectionSiblings = useMemo(() => {
     const result = new Map<string, CollectionTreeNode<Collection>[]>();
     const visit = (nodes: CollectionTreeNode<Collection>[]) => {
@@ -409,31 +385,25 @@ export function Sidebar() {
     visit(collectionTree);
     return result;
   }, [collectionTree]);
+  const displayedCollapsed = useMemo(() => {
+    if (collectionDropTarget?.zone !== "inside") return collapsed;
+    const next = new Set(collapsed);
+    next.delete(collectionDropTarget.target.id);
+    return next;
+  }, [collapsed, collectionDropTarget]);
   const activeCollectionId = view.kind === "collection" ? view.id : null;
   const moveExcluded = moveTarget ? collectionSubtreeIds(collections, moveTarget.id) : new Set<string>();
 
   const dropCollection = async (
     draggedId: string,
-    target: Collection,
-    zone: CollectionDropZone,
-    siblings: Collection[],
+    dropTarget: CollectionDropTarget,
   ) => {
-    if (draggedId === target.id) return;
-    let parentId = target.parentId;
-    let beforeId: string | null = target.id;
-    if (zone === "inside") {
-      parentId = target.id;
-      beforeId = null;
-    } else if (zone === "after") {
-      const index = siblings.findIndex((item) => item.id === target.id);
-      beforeId = siblings[index + 1]?.id ?? null;
-    }
-    if (!(await moveCollection(draggedId, parentId, beforeId))) {
+    if (!(await moveCollection(draggedId, dropTarget.parentId, dropTarget.beforeId))) {
       toast.error("无法移动集合");
-    } else if (zone === "inside") {
+    } else if (dropTarget.zone === "inside") {
       setCollapsed((current) => {
         const next = new Set(current);
-        next.delete(target.id);
+        next.delete(dropTarget.target.id);
         return next;
       });
     }
@@ -442,54 +412,159 @@ export function Sidebar() {
   const updateCollectionDropTarget = (next: CollectionDropTarget | null) => {
     collectionDropTargetRef.current = next;
     setCollectionDropTarget((current) =>
-      current?.target.id === next?.target.id && current?.zone === next?.zone ? current : next,
+      current?.parentId === next?.parentId
+        && current?.beforeId === next?.beforeId
+        && (current?.zone === "inside" ? current.target.id : null) === (next?.zone === "inside" ? next.target.id : null)
+        ? current
+        : next,
     );
   };
 
+  const cancelCollectionInside = () => {
+    if (collectionInsideTimerRef.current !== null) clearTimeout(collectionInsideTimerRef.current);
+    collectionInsideTimerRef.current = null;
+    collectionInsideCandidateRef.current = null;
+  };
+
   const startCollectionDrag = (draggedId: string) => {
+    cancelCollectionInside();
     suppressCollectionClickRef.current = true;
     draggedCollectionIdRef.current = draggedId;
     dragExcludedRef.current = collectionSubtreeIds(collections, draggedId);
+    dragCollectionsRef.current = collections;
     updateCollectionDropTarget(null);
+    setPreviewCollections(collections);
     setDraggedCollectionId(draggedId);
   };
 
   const moveCollectionDrag = (draggedId: string, point: { x: number; y: number }) => {
     if (draggedCollectionIdRef.current !== draggedId) return;
+    const dragged = dragCollectionsRef.current.find((collection) => collection.id === draggedId);
+    if (!dragged) return;
+    const currentTarget = collectionDropTargetRef.current;
+    if (currentTarget?.zone === "inside") {
+      const row = Array.from(collectionListRef.current?.querySelectorAll<HTMLElement>("[data-collection-id]") ?? [])
+        .find((candidate) => candidate.dataset.collectionId === currentTarget.target.id);
+      const rect = row?.getBoundingClientRect();
+      if (rect && point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom) return;
+    }
     let targetElement: HTMLElement | null = null;
-    for (const element of document.elementsFromPoint(point.x, point.y)) {
-      const candidate = element.closest<HTMLElement>("[data-collection-id]");
-      const candidateId = candidate?.dataset.collectionId;
-      if (candidateId && !dragExcludedRef.current.has(candidateId)) {
+    let hoveredElement: HTMLElement | null = null;
+    let targetDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of collectionListRef.current?.querySelectorAll<HTMLElement>("[data-collection-id]") ?? []) {
+      const candidateId = candidate.dataset.collectionId;
+      if (!candidateId || dragExcludedRef.current.has(candidateId)) continue;
+      const candidateCollection = collectionsById.get(candidateId);
+      if (!candidateCollection || (dragged.effectiveLocked && candidateCollection.parentId !== dragged.parentId)) continue;
+      const rect = candidate.getBoundingClientRect();
+      if (point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom) {
+        hoveredElement = candidate;
+      }
+      const distance = Math.abs(point.y - (rect.top + rect.bottom) / 2);
+      if (distance < targetDistance) {
         targetElement = candidate;
-        break;
+        targetDistance = distance;
       }
     }
 
     const targetId = targetElement?.dataset.collectionId;
     const target = targetId ? collectionsById.get(targetId) : undefined;
     const siblings = targetId ? collectionSiblings.get(targetId) : undefined;
-    if (!targetElement || !target || !siblings) {
+    const listRect = collectionListRef.current?.getBoundingClientRect();
+    if (!targetElement || !target || !siblings || !listRect
+      || point.y < listRect.top - targetElement.offsetHeight
+      || point.y > listRect.bottom + targetElement.offsetHeight) {
+      cancelCollectionInside();
       updateCollectionDropTarget(null);
+      setPreviewCollections(dragCollectionsRef.current);
       return;
     }
 
     const rect = targetElement.getBoundingClientRect();
     const ratio = (point.y - rect.top) / rect.height;
-    const zone: CollectionDropZone = ratio < 0.25 ? "before" : ratio > 0.75 ? "after" : "inside";
-    updateCollectionDropTarget({ target, zone, siblings });
+    let zone: CollectionDropZone = ratio < 0.5 ? "before" : "after";
+    let parentId = target.parentId;
+    let beforeId: string | null = target.id;
+    if (!dragged.effectiveLocked && point.y <= listRect.top) {
+      parentId = null;
+      beforeId = collectionTree.find((collection) => !dragExcludedRef.current.has(collection.id))?.id ?? null;
+      zone = "before";
+    } else if (!dragged.effectiveLocked && point.y >= listRect.bottom) {
+      parentId = null;
+      beforeId = null;
+      zone = "after";
+    } else if (zone === "after") {
+      const available = siblings.filter((item) => item.id !== draggedId);
+      const index = available.findIndex((item) => item.id === target.id);
+      beforeId = available[index + 1]?.id ?? null;
+    }
+    const hoveredId = hoveredElement?.dataset.collectionId;
+    const hoveredTarget = hoveredId ? collectionsById.get(hoveredId) : undefined;
+    const canEnter = hoveredTarget
+      && !dragged.effectiveLocked
+      && (!hoveredTarget.effectiveLocked || lockSession.unlocked);
+    if (!canEnter) {
+      cancelCollectionInside();
+    } else if (collectionInsideCandidateRef.current?.targetId === hoveredTarget.id) {
+      collectionInsideCandidateRef.current.point = point;
+    } else {
+      cancelCollectionInside();
+      collectionInsideCandidateRef.current = { targetId: hoveredTarget.id, point };
+      collectionInsideTimerRef.current = setTimeout(() => {
+        collectionInsideTimerRef.current = null;
+        const candidate = collectionInsideCandidateRef.current;
+        if (!candidate || draggedCollectionIdRef.current !== draggedId) return;
+        const row = Array.from(collectionListRef.current?.querySelectorAll<HTMLElement>("[data-collection-id]") ?? [])
+          .find((element) => element.dataset.collectionId === candidate.targetId);
+        const rowRect = row?.getBoundingClientRect();
+        if (!rowRect
+          || candidate.point.x < rowRect.left
+          || candidate.point.x > rowRect.right
+          || candidate.point.y < rowRect.top
+          || candidate.point.y > rowRect.bottom) {
+          collectionInsideCandidateRef.current = null;
+          return;
+        }
+        const insideTarget = dragCollectionsRef.current.find((collection) => collection.id === candidate.targetId);
+        if (!insideTarget) return;
+        updateCollectionDropTarget({ target: insideTarget, zone: "inside", parentId: insideTarget.id, beforeId: null });
+        setPreviewCollections(projectCollectionMove(dragCollectionsRef.current, draggedId, insideTarget.id, null));
+      }, 200);
+    }
+    const next = { target, zone, parentId, beforeId };
+    const current = collectionDropTargetRef.current;
+    if (current?.parentId === parentId
+      && current.beforeId === beforeId
+      && current.zone !== "inside") return;
+    updateCollectionDropTarget(next);
+    setPreviewCollections(projectCollectionMove(dragCollectionsRef.current, draggedId, parentId, beforeId));
   };
 
   const endCollectionDrag = (draggedId: string) => {
+    cancelCollectionInside();
     const dropTarget = collectionDropTargetRef.current;
+    const projected = dropTarget
+      ? projectCollectionMove(dragCollectionsRef.current, draggedId, dropTarget.parentId, dropTarget.beforeId)
+      : dragCollectionsRef.current;
     draggedCollectionIdRef.current = null;
-    updateCollectionDropTarget(null);
     setDraggedCollectionId(null);
     requestAnimationFrame(() => {
       suppressCollectionClickRef.current = false;
     });
-    if (dropTarget) {
-      void dropCollection(draggedId, dropTarget.target, dropTarget.zone, dropTarget.siblings);
+    const moving = projected.find((collection) => collection.id === draggedId);
+    if (dropTarget && moving && projected !== dragCollectionsRef.current) {
+      const siblings = projected
+        .filter((collection) => collection.parentId === moving.parentId)
+        .sort((a, b) => a.position - b.position);
+      const index = siblings.findIndex((collection) => collection.id === draggedId);
+      const finalTarget = { ...dropTarget, parentId: moving.parentId, beforeId: siblings[index + 1]?.id ?? null };
+      void dropCollection(draggedId, finalTarget).finally(() => {
+        updateCollectionDropTarget(null);
+        setPreviewCollections(null);
+      });
+    } else {
+      updateCollectionDropTarget(null);
+      setPreviewCollections(null);
     }
   };
 
@@ -592,16 +667,16 @@ export function Sidebar() {
 
         {/* Collections */}
         <SectionLabel onAdd={() => beginCreate({ kind: "collection", parentId: null })}>集合</SectionLabel>
-        <div className="flex flex-col gap-px">
+        <div ref={collectionListRef} className="flex flex-col gap-px">
           <MotionConfig reducedMotion="user">
             <LayoutGroup id="collection-tree">
               <CollectionRows
                 nodes={collectionTree}
                 activeId={activeCollectionId}
                 renamingId={renameTarget?.kind === "collection" ? renameTarget.id : null}
-                collapsed={collapsed}
+                collapsed={displayedCollapsed}
                 draggedId={draggedCollectionId}
-                dropTarget={collectionDropTarget}
+                dropTarget={draggedCollectionId ? collectionDropTarget : null}
                 onToggle={(id) => setCollapsed((current) => {
                   const next = new Set(current);
                   if (next.has(id)) next.delete(id);

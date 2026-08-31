@@ -172,6 +172,42 @@ mod tests {
     }
 
     #[test]
+    fn locked_collections_can_reorder_but_not_reparent() {
+        let (_temp, lib) = disk_library();
+        let first = lib.create_collection("First", None).unwrap();
+        let locked = lib.create_collection("Locked", None).unwrap();
+        lib.set_collection_locked(&locked.id, true).unwrap();
+
+        lib.move_collection(&locked.id, None, Some(&first.id))
+            .unwrap();
+        assert_eq!(lib.list_collections().unwrap()[0].id, locked.id);
+        assert!(lib
+            .move_collection(&locked.id, Some(&first.id), None)
+            .is_err());
+    }
+
+    #[test]
+    fn unlocked_collection_can_move_with_locked_descendants() {
+        let (_temp, lib) = disk_library();
+        let root = lib.create_collection("Root", None).unwrap();
+        let locked = lib.create_collection("Locked", Some(&root.id)).unwrap();
+        let target = lib.create_collection("Target", None).unwrap();
+        lib.set_collection_locked(&locked.id, true).unwrap();
+
+        lib.move_collection(&root.id, Some(&target.id), None)
+            .unwrap();
+        assert_eq!(
+            lib.list_collections()
+                .unwrap()
+                .into_iter()
+                .find(|collection| collection.id == root.id)
+                .unwrap()
+                .parent_id,
+            Some(target.id)
+        );
+    }
+
+    #[test]
     fn locks_inherit_redact_search_and_guard_mutations() {
         let lib = library();
         let root = lib.create_collection("Private", None).unwrap();
@@ -2734,12 +2770,7 @@ impl Library {
         }
 
         let mut conn = self.db.lock().unwrap();
-        self.require_collection_tree_access(&conn, id)?;
-        if let Some(parent_id) = parent_id {
-            self.require_collection_access(&conn, parent_id)?;
-        }
-        let tx = conn.transaction().map_err(map_err)?;
-        let old_parent: Option<String> = tx
+        let old_parent: Option<String> = conn
             .query_row(
                 "SELECT parent_id FROM collections WHERE id = ?1",
                 params![id],
@@ -2748,6 +2779,13 @@ impl Library {
             .optional()
             .map_err(map_err)?
             .ok_or_else(|| "集合不存在".to_string())?;
+        if old_parent.as_deref() != parent_id {
+            self.require_collection_access(&conn, id)?;
+            if let Some(parent_id) = parent_id {
+                self.require_collection_access(&conn, parent_id)?;
+            }
+        }
+        let tx = conn.transaction().map_err(map_err)?;
         let was_locked = Self::collection_effective_locked(&tx, id)?;
 
         if let Some(parent_id) = parent_id {
