@@ -356,6 +356,7 @@ export function Sidebar() {
     tags,
     savedViews,
     view,
+    lockSession,
     setView,
     createCollection,
     moveCollection,
@@ -513,15 +514,36 @@ export function Sidebar() {
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {/* Smart views */}
         <div className="flex flex-col gap-px">
-          {SMART_VIEWS.map(({ kind, label, icon: Icon }) => (
-            <SidebarRow
-              key={kind}
-              active={view.kind === kind}
-              onClick={() => setView({ kind })}
-              icon={<Icon />}
-              label={label}
-            />
-          ))}
+          {SMART_VIEWS.map(({ kind, label, icon: Icon }) => {
+            const row = (
+              <SidebarRow
+                key={kind}
+                active={view.kind === kind}
+                onClick={() => setView({ kind })}
+                icon={<Icon />}
+                label={label}
+              />
+            );
+            if (kind !== "privacy") return row;
+            return (
+              <ContextMenu key={kind}>
+                <ContextMenuTrigger asChild>
+                  <div>{row}</div>
+                </ContextMenuTrigger>
+                <ContextMenuContent className="min-w-40">
+                  {lockSession.unlocked ? (
+                    <ContextMenuItem onSelect={() => void useLibrary.getState().lockNow()}>
+                      <Lock className="size-3.5" /> 立即锁定
+                    </ContextMenuItem>
+                  ) : (
+                    <ContextMenuItem onSelect={() => void useLibrary.getState().unlockProtectedContent()}>
+                      <LockOpen className="size-3.5" /> 解锁
+                    </ContextMenuItem>
+                  )}
+                </ContextMenuContent>
+              </ContextMenu>
+            );
+          })}
         </div>
 
         {savedViews.length > 0 && (

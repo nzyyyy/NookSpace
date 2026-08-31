@@ -15,6 +15,7 @@ import { initTheme } from "@/stores/theme";
 // Reflect the persisted theme before the first paint (index.html does the
 // same pre-paint; this attaches the system-preference listener).
 initTheme();
+document.addEventListener("contextmenu", (event) => event.preventDefault());
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
