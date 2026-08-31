@@ -17,7 +17,6 @@ import { minimalSetup } from "codemirror";
 import type { SwitchableFormat } from "@/lib/file-types";
 import type { TextSnapshot } from "@/lib/text-file-draft";
 import { foldPlaceholderLabel } from "./fold-placeholder";
-import { markdownLivePreview } from "./markdown-live-preview";
 
 const csvLanguage = StreamLanguage.define({
   name: "csv",
@@ -107,25 +106,18 @@ const editorTheme = EditorView.theme({
     padding: "0 2px",
     color: "var(--muted-foreground)",
   },
-  ".cm-md-heading": {
-    fontFamily: "var(--font-sans)",
-    lineHeight: "1.45",
-  },
-  ".cm-md-list-mark": { color: "var(--muted-foreground)" },
 });
 
-const modeExtensions = (readOnly: boolean, ariaLabel: string, livePreview: boolean): Extension => [
+const modeExtensions = (readOnly: boolean, ariaLabel: string): Extension => [
   EditorState.readOnly.of(readOnly),
   EditorView.editable.of(!readOnly),
   EditorView.contentAttributes.of({ "aria-label": ariaLabel, tabindex: "0" }),
-  livePreview ? markdownLivePreview() : [],
 ];
 
 export default function TextEditor({
   initialContent,
   format,
   readOnly,
-  livePreview,
   ariaLabel,
   onDocumentChange,
   onEscape,
@@ -133,7 +125,6 @@ export default function TextEditor({
   initialContent: string;
   format: SwitchableFormat | null;
   readOnly: boolean;
-  livePreview: boolean;
   ariaLabel: string;
   onDocumentChange: (snapshot: TextSnapshot) => void;
   onEscape: () => void;
@@ -177,7 +168,7 @@ export default function TextEditor({
           },
         }]),
         languageRef.current.of(languageExtensions(format)),
-        modeRef.current.of(modeExtensions(readOnly, ariaLabel, livePreview)),
+        modeRef.current.of(modeExtensions(readOnly, ariaLabel)),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             const document = update.state.doc;
@@ -199,10 +190,10 @@ export default function TextEditor({
     const view = viewRef.current;
     if (!view) return;
     view.dispatch({
-      effects: modeRef.current.reconfigure(modeExtensions(readOnly, ariaLabel, livePreview)),
+      effects: modeRef.current.reconfigure(modeExtensions(readOnly, ariaLabel)),
     });
     if (!readOnly) view.focus();
-  }, [ariaLabel, livePreview, readOnly]);
+  }, [ariaLabel, readOnly]);
 
   useEffect(() => {
     const view = viewRef.current;

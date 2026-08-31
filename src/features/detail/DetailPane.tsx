@@ -74,6 +74,7 @@ import {
 const PdfPreview = lazy(() => import("@/components/PdfPreview"));
 const TextEditor = lazy(() => import("./TextEditor"));
 const CsvTable = lazy(() => import("./CsvTable"));
+const MarkdownReader = lazy(() => import("./MarkdownReader"));
 
 function EmptyDetail() {
   return (
@@ -643,19 +644,20 @@ function TextFileEditor({
           </div>
         )}
 
-        <Suspense fallback={<p className="py-12 text-center font-mono text-[11px] text-muted-foreground">正在载入编辑器…</p>}>
+        <Suspense fallback={<p className="py-12 text-center font-mono text-[11px] text-muted-foreground">正在载入文本视图…</p>}>
           {mode === "read" && format === "csv" ? (
             <CsvTable content={content} />
+          ) : mode === "read" && format === "md" ? (
+            <MarkdownReader
+              content={content}
+              ariaLabel={`阅读 ${item.title}`}
+              large={isLargeTextFile(item.size, content.length)}
+            />
           ) : (
             <TextEditor
               initialContent={content}
               format={format}
               readOnly={mode === "read" || Boolean(item.deletedAt)}
-              livePreview={
-                (mode === "read" || Boolean(item.deletedAt))
-                && format === "md"
-                && !isLargeTextFile(item.size, content.length)
-              }
               ariaLabel={`${mode === "read" ? "阅读" : "编辑"} ${item.title}`}
               onDocumentChange={stageSnapshot}
               onEscape={() => {
