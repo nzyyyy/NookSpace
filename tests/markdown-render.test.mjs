@@ -35,6 +35,24 @@ const value = 1;
   assert.match(html, /<table>/);
   assert.match(html, /<blockquote>/);
   assert.match(html, /class="language-ts"/);
+  assert.match(blocks.map((block) => block.searchText).join(""), /完成 粗体/);
+  assert.doesNotMatch(blocks.map((block) => block.searchText).join(""), /\*\*粗体\*\*/);
+});
+
+test("indexes only rendered Markdown text", () => {
+  const blocks = renderMarkdownBlocks(`[显示文字](https://example.com/hidden) **粗体** & <tag>
+
+\`inline\`
+
+![远程图片](https://example.com/image.png) ![不可用](./image.png)`);
+  const text = blocks.map((block) => block.searchText).join("");
+
+  assert.match(text, /显示文字/);
+  assert.match(text, /粗体/);
+  assert.match(text, /& <tag>/);
+  assert.match(text, /inline/);
+  assert.match(text, /图片不可用：不可用/);
+  assert.doesNotMatch(text, /example\.com|\*\*|远程图片/);
 });
 
 test("escapes raw HTML and limits links and images to allowed protocols", () => {

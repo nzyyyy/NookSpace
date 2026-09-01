@@ -146,6 +146,9 @@
     overflow-wrap: anywhere;
   }
 
+  .markdown-search-match { background: #fde047; color: #1c1917; }
+  .markdown-search-match-selected { background: #facc15; outline: 2px solid #a16207; outline-offset: -1px; }
+
   .markdown-block + .markdown-block {
     margin-top: 1rem;
   }

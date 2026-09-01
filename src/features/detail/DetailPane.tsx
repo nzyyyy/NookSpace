@@ -700,6 +700,8 @@ function TextFileEditor({
               content={content}
               ariaLabel={`阅读 ${item.title}`}
               large={isLargeTextFile(item.size, content.length)}
+              searchOpen={searchOpen}
+              onSearchOpenChange={setSearchOpen}
             />
           ) : (
             <TextEditor
@@ -715,7 +717,7 @@ function TextFileEditor({
               onSearchOpenChange={setSearchOpen}
             />
           )}
-          {mode === "read" && searchOpen && (format === "md" || format === "csv") && (
+          {mode === "read" && searchOpen && format === "csv" && (
             <div className="absolute inset-0 z-10 flex min-h-0 bg-background">
               <TextEditor
                 initialContent={content}

@@ -7,6 +7,7 @@ export const MARKDOWN_BLOCK_BATCH_SIZE = 200;
 export interface MarkdownBlock {
   key: string;
   html: string;
+  searchText: string;
   kind: string;
   estimatedHeight: number;
   sourceLength: number;
@@ -169,6 +170,7 @@ function oversizedBlocks(
     blocks.push({
       key: `${baseKey}-part-${part}`,
       html: `${part === 0 ? `<p class="markdown-block-warning">${warning}</p>` : ""}<pre class="markdown-oversized-block">${text}</pre>`,
+      searchText: source.slice(start, end),
       kind: "oversized",
       estimatedHeight: 480,
       sourceLength: end - start,
@@ -202,6 +204,7 @@ export function renderMarkdownBlocks(source: string): MarkdownBlock[] {
     return [{
       key,
       html,
+      searchText: markdown.utils.unescapeAll(html.replace(/<[^>]*>/g, "")),
       kind,
       estimatedHeight: estimateHeight(kind, range.lines, html),
       sourceLength: blockSource.length,
