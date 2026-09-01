@@ -185,15 +185,16 @@ export const useLibrary = create<LibraryState>((set, get) => {
 
   const applyLockSession = (lockSession: LockSession) => {
     clearTimeout(lockTimer);
-    set(lockSession.unlocked
-      ? { lockSession }
-      : {
+    const expired = get().lockSession.unlocked && !lockSession.unlocked;
+    set(expired
+      ? {
           lockSession,
           detail: null,
           detailLoading: false,
           noteMode: "read",
           snippets: {},
-        });
+        }
+      : { lockSession });
     if (lockSession.unlocked && lockSession.remainingMs > 0) {
       lockTimer = setTimeout(() => void get().syncLockSession(), lockSession.remainingMs + 50);
     }

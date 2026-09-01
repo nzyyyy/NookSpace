@@ -135,11 +135,6 @@ export function useShortcuts() {
         }
         return;
       }
-      // Delete — soft delete (not in trash view)
-      if (e.key === "Backspace" && lib.selectedId && lib.view.kind !== "trash") {
-        void lib.deleteItems([lib.selectedId]);
-        toast.info("已移至回收站");
-      }
     };
 
     window.addEventListener("keydown", onKey);

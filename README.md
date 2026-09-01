@@ -43,7 +43,6 @@ cargo build --manifest-path src-tauri/Cargo.toml
 | `Enter` | 打开选中项 |
 | `↑` / `↓` | 列表导航 |
 | `Cmd+[` / `Cmd+]` | 后退 / 前进 |
-| `Delete` | 移到回收站 |
 | `Cmd+,` | 设置 |
 
 ## 数据位置
