@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Download, ExternalLink, Image as ImageIcon, Lock, LockOpen, Shield, ShieldOff, Trash2 } from "lucide-react";
+import { Download, ExternalLink, Image as ImageIcon, Lock, LockOpen, Shield, ShieldOff, Trash2, Undo2 } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ipc, type Item, type ItemSummary } from "@/core/ipc";
@@ -122,7 +122,7 @@ export function useItemActions(item: Item | ItemSummary): ItemAction[] {
       },
     });
   }
-  if (!item.isPrivate) {
+  if (!item.deletedAt && !item.isPrivate) {
     if (item.collectionLocked) {
       add({ key: "collection-lock", label: "由所属集合锁定", disabled: true });
     } else {
@@ -136,17 +136,39 @@ export function useItemActions(item: Item | ItemSummary): ItemAction[] {
     }
   }
   addSeparator();
-  add({
-    key: "delete",
-    label: "移到回收站",
-    icon: <Trash2 className="size-3.5" />,
-    disabled: protectedLocked,
-    destructive: true,
-    run: () => {
-      void useLibrary.getState().deleteItems([item.id]);
-      toast.info("已移至回收站");
-    },
-  });
+  if (item.deletedAt) {
+    add({
+      key: "restore",
+      label: "放回原处",
+      icon: <Undo2 className="size-3.5" />,
+      run: () => {
+        void useLibrary.getState().restoreItems([item.id]);
+        toast.success("已恢复");
+      },
+    });
+    add({
+      key: "purge",
+      label: "永久删除",
+      icon: <Trash2 className="size-3.5" />,
+      destructive: true,
+      run: () => {
+        void useLibrary.getState().purgeItems([item.id]);
+        toast.success("已永久删除");
+      },
+    });
+  } else {
+    add({
+      key: "delete",
+      label: "移到回收站",
+      icon: <Trash2 className="size-3.5" />,
+      disabled: protectedLocked,
+      destructive: true,
+      run: () => {
+        void useLibrary.getState().deleteItems([item.id]);
+        toast.info("已移至回收站");
+      },
+    });
+  }
 
   return actions;
 }

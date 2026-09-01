@@ -597,7 +597,7 @@ export function ItemList() {
                 </PopoverContent>
               </Popover>}
 
-              {!isPrivacy && lockableBatch.length > 0 && <Button
+              {!isTrash && !isPrivacy && lockableBatch.length > 0 && <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => void setItemsLocked(lockableBatch, !lockableBatchLocked)}
@@ -668,16 +668,14 @@ export function ItemList() {
       </div>
 
       <div className="flex shrink-0 items-center gap-1 px-3 pt-2">
-        {!isTrash && (
-          <Input
-            id="list-search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={privacyLocked ? "保险箱已锁定" : collectionLocked ? "集合已锁定" : "搜索标题、内容、文件名…"}
-            disabled={viewLocked}
-            className="h-7 min-w-0 flex-1 text-[13px]"
-          />
-        )}
+        <Input
+          id="list-search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={privacyLocked ? "保险箱已锁定" : collectionLocked ? "集合已锁定" : "搜索标题、内容、文件名…"}
+          disabled={viewLocked}
+          className="h-7 min-w-0 flex-1 text-[13px]"
+        />
         {!isTrash && !isPrivacy && query.trim() && (
           <Button variant="ghost" size="icon-sm" onClick={() => {
             setSaveName(query.trim());
@@ -686,7 +684,6 @@ export function ItemList() {
             <BookmarkPlus className="size-3.5" />
           </Button>
         )}
-        {isTrash && <div className="min-w-0 flex-1" />}
         <ListViewChrome
           listLayout={listLayout}
           setListLayout={setListLayout}
@@ -749,7 +746,7 @@ export function ItemList() {
             {items.length === 0 && (
               <div className="px-4 py-10 text-center">
                 <p className="text-[13px] text-muted-foreground">
-                  {isTrash ? "回收站是空的" : "没有匹配的结果"}
+                  {isTrash && !query ? "回收站是空的" : "没有匹配的结果"}
                 </p>
               </div>
             )}
