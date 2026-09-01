@@ -69,9 +69,13 @@ export function useShortcuts() {
         })();
         return;
       }
-      // Cmd+F — focus list search (expand the list first if it is collapsed)
-      if (mod && e.key.toLowerCase() === "f" && !inField) {
+      // Cmd+F — search the focused document, otherwise focus list search.
+      if (mod && e.key.toLowerCase() === "f" && !e.defaultPrevented && !inField) {
         e.preventDefault();
+        if (target.closest("[data-document-search-scope]")) {
+          window.dispatchEvent(new Event("nookspace:find-in-document"));
+          return;
+        }
         if (useUi.getState().listCollapsed) useUi.getState().setListCollapsed(false);
         requestAnimationFrame(() => document.getElementById("list-search")?.focus());
         return;

@@ -13,6 +13,7 @@ import {
   MoreHorizontal,
   Paperclip,
   PanelLeftOpen,
+  Search,
   Star,
   Tags,
   X,
@@ -335,9 +336,12 @@ function TextFileEditor({
   const [content, setContent] = useState("");
   const noteMode = useLibrary((state) => state.noteMode);
   const setNoteMode = useLibrary((state) => state.setNoteMode);
+  const mode = item.deletedAt ? "read" : noteMode;
+  const format = canonicalFormat(fileExtension(item.storedPath || item.title));
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<TextFileSaveState>("idle");
+  const [searchOpen, setSearchOpen] = useState(false);
   const version = useRef("");
   const encoding = useRef<TextFileEncoding>("utf8");
   const lineEnding = useRef<TextFileLineEnding>("lf");
@@ -345,13 +349,13 @@ function TextFileEditor({
   const conflictVersion = useRef<string | null>(null);
   const saveError = useRef("");
   const mounted = useRef(true);
+  const searchScopeRef = useRef<HTMLDivElement>(null);
+  const previousMode = useRef(mode);
   const draftWarningShown = useRef(false);
   const draftWriter = useRef<ReturnType<typeof createSerialTextFileDraftWriter> | null>(null);
   const saver = useRef<ReturnType<typeof createSerialNoteSaver> | null>(null);
   const snapshotter = useRef<ReturnType<typeof createTextSnapshotScheduler> | null>(null);
   const updateContentRef = useRef<(content: string) => void>(() => undefined);
-  const mode = item.deletedAt ? "read" : noteMode;
-  const format = canonicalFormat(fileExtension(item.storedPath || item.title));
 
   const warnDraftFailure = () => {
     if (draftWarningShown.current) return;
@@ -428,6 +432,7 @@ function TextFileEditor({
 
   useEffect(() => {
     let alive = true;
+    setSearchOpen(false);
     snapshotter.current?.cancel();
     setLoading(true);
     setLoadError(null);
@@ -481,6 +486,21 @@ function TextFileEditor({
       alive = false;
     };
   }, [item.id]);
+
+  useEffect(() => {
+    const openSearch = () => setSearchOpen(true);
+    window.addEventListener("nookspace:find-in-document", openSearch);
+    return () => window.removeEventListener("nookspace:find-in-document", openSearch);
+  }, []);
+
+  useEffect(() => {
+    if (previousMode.current === mode) return;
+    previousMode.current = mode;
+    setSearchOpen(false);
+    if (mode === "read") {
+      requestAnimationFrame(() => searchScopeRef.current?.focus({ preventScroll: true }));
+    }
+  }, [mode]);
 
   useEffect(() => {
     mounted.current = true;
@@ -601,6 +621,22 @@ function TextFileEditor({
     <>
       {headerActions && createPortal(
         <>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => setSearchOpen(true)}
+                aria-label="在文档内查找"
+                aria-keyshortcuts="Meta+F Control+F"
+              >
+                <Search className="size-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              在文档内查找 <kbd data-slot="kbd">⌘F</kbd>
+            </TooltipContent>
+          </Tooltip>
           <div className="flex items-center rounded-md bg-muted p-0.5" aria-label="文本文件模式">
             <Button variant={mode === "read" ? "default" : "ghost"} size="xs" aria-pressed={mode === "read"} onClick={() => changeMode("read")}>
               阅读
@@ -633,7 +669,19 @@ function TextFileEditor({
         headerActions,
       )}
 
-      <div className="flex min-h-[360px] min-w-0 flex-1 flex-col gap-3">
+      <div
+        ref={searchScopeRef}
+        data-document-search-scope
+        tabIndex={-1}
+        className="relative flex min-h-[360px] min-w-0 flex-1 flex-col gap-3 outline-none"
+        onPointerDownCapture={(event) => {
+          const target = event.target;
+          if (target instanceof Element
+            && !target.closest("button, input, textarea, select, a, [contenteditable='true']")) {
+            event.currentTarget.focus({ preventScroll: true });
+          }
+        }}
+      >
         {saveState === "conflict" && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2" role="alert">
             <p className="min-w-0 flex-1 text-[12px] text-foreground/80">
@@ -663,7 +711,23 @@ function TextFileEditor({
               onEscape={() => {
                 if (mode === "edit") changeMode("read");
               }}
+              searchOpen={searchOpen}
+              onSearchOpenChange={setSearchOpen}
             />
+          )}
+          {mode === "read" && searchOpen && (format === "md" || format === "csv") && (
+            <div className="absolute inset-0 z-10 flex min-h-0 bg-background">
+              <TextEditor
+                initialContent={content}
+                format={format}
+                readOnly
+                ariaLabel={`查找 ${item.title}`}
+                onDocumentChange={() => undefined}
+                onEscape={() => undefined}
+                searchOpen
+                onSearchOpenChange={setSearchOpen}
+              />
+            </div>
           )}
         </Suspense>
       </div>
@@ -780,7 +844,13 @@ export function DetailPane() {
   const isTrashed = item ? item.deletedAt !== null : false;
 
   return (
-    <section className="flex min-w-0 flex-1 flex-col bg-background">
+    <section
+      data-document-search-scope={item?.itemType === "file"
+        && isSwitchableText(item.storedPath || item.title)
+        ? ""
+        : undefined}
+      className="flex min-w-0 flex-1 flex-col bg-background"
+    >
       <div ref={headerRef} className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
         {listCollapsed && (
           <Tooltip>

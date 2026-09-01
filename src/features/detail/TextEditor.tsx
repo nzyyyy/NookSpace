@@ -10,7 +10,12 @@ import {
   syntaxHighlighting,
 } from "@codemirror/language";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
-import { searchKeymap } from "@codemirror/search";
+import {
+  closeSearchPanel,
+  openSearchPanel,
+  searchKeymap,
+  searchPanelOpen,
+} from "@codemirror/search";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 import { minimalSetup } from "codemirror";
@@ -72,10 +77,55 @@ const highlightStyle = HighlightStyle.define([
   { tag: t.meta, color: "var(--muted-foreground)" },
 ]);
 
+function openSearchKeepingPagePosition(view: EditorView) {
+  const viewport = view.dom.closest<HTMLElement>("[data-slot=scroll-area-viewport]");
+  const position = viewport ? { top: viewport.scrollTop, left: viewport.scrollLeft } : null;
+  const opened = openSearchPanel(view);
+  if (viewport && position) {
+    const restore = () => {
+      viewport.scrollTop = position.top;
+      viewport.scrollLeft = position.left;
+    };
+    restore();
+    requestAnimationFrame(() => {
+      restore();
+      requestAnimationFrame(restore);
+    });
+  }
+  requestAnimationFrame(() => {
+    const root = view.dom.closest("[data-document-search-scope]") ?? view.dom;
+    const controls = [
+      ["button[name=prev]", "上一个匹配"],
+      ["button[name=next]", "下一个匹配"],
+      ["button[name=select]", "选择全部匹配"],
+      ["label:nth-of-type(1)", "区分大小写"],
+      ["label:nth-of-type(2)", "使用正则表达式"],
+      ["label:nth-of-type(3)", "全词匹配"],
+      ["button[name=replace]", "替换当前匹配"],
+      ["button[name=replaceAll]", "替换全部匹配"],
+      ["button[name=close]", "关闭查找"],
+    ] as const;
+    for (const [selector, label] of controls) {
+      const control = root.querySelector<HTMLElement>(`.cm-search ${selector}`);
+      if (control?.matches("button.cm-button")) control.textContent = "";
+      if (control?.tagName === "LABEL") {
+        for (const node of [...control.childNodes]) {
+          if (node.nodeType === Node.TEXT_NODE) node.remove();
+        }
+        control.querySelector("input")?.setAttribute("aria-label", label);
+      }
+      control?.setAttribute("title", label);
+      control?.setAttribute("aria-label", label);
+    }
+  });
+  return opened;
+}
+
 const editorTheme = EditorView.theme({
   "&": {
     height: "100%",
     minHeight: "360px",
+    position: "relative",
     backgroundColor: "transparent",
     color: "var(--foreground)",
     fontSize: "13px",
@@ -106,6 +156,138 @@ const editorTheme = EditorView.theme({
     padding: "0 2px",
     color: "var(--muted-foreground)",
   },
+  ".cm-panels": {
+    backgroundColor: "var(--background)",
+    color: "var(--foreground)",
+  },
+  ".cm-panels-bottom": {
+    position: "fixed",
+    inset: "56px 24px auto auto",
+    zIndex: "20",
+    width: "max-content",
+    maxWidth: "calc(100% - 16px)",
+    border: "none",
+    backgroundColor: "transparent",
+  },
+  ".cm-panel.cm-search": {
+    display: "flex",
+    flexWrap: "nowrap",
+    alignItems: "center",
+    gap: "2px",
+    padding: "6px",
+    border: "1px solid var(--border)",
+    borderRadius: "8px",
+    backgroundColor: "var(--background)",
+    boxShadow: "0 8px 24px color-mix(in oklab, var(--foreground) 12%, transparent)",
+    fontSize: "12px",
+    overflowX: "auto",
+    scrollbarWidth: "none",
+  },
+  ".cm-search br": { display: "none" },
+  ".cm-search .cm-textfield": {
+    flex: "1 1 84px",
+    width: "84px",
+    minWidth: "48px",
+    maxWidth: "128px",
+    height: "24px",
+    border: "1px solid var(--border)",
+    borderRadius: "6px",
+    backgroundColor: "var(--input)",
+    color: "var(--foreground)",
+    padding: "0 6px",
+    outline: "none",
+  },
+  ".cm-search .cm-textfield:focus": { borderColor: "var(--ring)" },
+  ".cm-search .cm-button": {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    height: "24px",
+    width: "24px",
+    border: "1px solid var(--border)",
+    borderRadius: "6px",
+    backgroundImage: "none",
+    backgroundColor: "var(--background)",
+    color: "var(--foreground)",
+    padding: "0",
+    fontSize: "0",
+  },
+  ".cm-search label": {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+    width: "24px",
+    height: "24px",
+    border: "1px solid var(--border)",
+    borderRadius: "6px",
+    fontSize: "0",
+    color: "var(--muted-foreground)",
+    cursor: "pointer",
+  },
+  ".cm-search label input": { position: "absolute", inset: "0", opacity: "0" },
+  ".cm-search label:has(input:checked)": {
+    backgroundColor: "var(--muted)",
+    color: "var(--foreground)",
+  },
+  ".cm-search .cm-button::before, .cm-search label::after": {
+    fontSize: "15px",
+    lineHeight: "1",
+  },
+  ".cm-search .cm-button[name=next]::before": { content: "'↓'" },
+  ".cm-search .cm-button[name=prev]::before": { content: "'↑'" },
+  ".cm-search .cm-button[name=select]::before": { content: "'▤'" },
+  ".cm-search .cm-button[name=replace]::before": { content: "'↪'" },
+  ".cm-search .cm-button[name=replaceAll]::before": { content: "'↪+'", fontSize: "13px" },
+  ".cm-search label:nth-of-type(1)::after": { content: "'Aa'", fontSize: "11px" },
+  ".cm-search label:nth-of-type(2)::after": { content: "'.*'", fontSize: "12px" },
+  ".cm-search label:nth-of-type(3)::after": { content: "'ab'", fontSize: "11px", textDecoration: "underline" },
+  ".cm-search .cm-textfield[name=search]": { order: "1" },
+  ".cm-search .cm-button[name=prev]": { order: "2" },
+  ".cm-search .cm-button[name=next]": { order: "3" },
+  ".cm-search .cm-button[name=select]": { order: "4" },
+  ".cm-search label:nth-of-type(1)": { order: "5" },
+  ".cm-search label:nth-of-type(2)": { order: "6" },
+  ".cm-search label:nth-of-type(3)": { order: "7" },
+  ".cm-search .cm-textfield[name=replace]": { order: "8" },
+  ".cm-search .cm-button[name=replace]": { order: "9" },
+  ".cm-search .cm-button[name=replaceAll]": { order: "10", width: "30px" },
+  ".cm-panel.cm-search [name=close]": {
+    order: "11",
+    position: "static",
+    top: "auto",
+    right: "auto",
+    flex: "0 0 24px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "24px",
+    height: "24px",
+    padding: "0",
+    margin: "0",
+    color: "var(--muted-foreground)",
+  },
+  ".cm-searchMatch": { backgroundColor: "#fde047", color: "#1c1917" },
+  ".cm-searchMatch-selected": {
+    backgroundColor: "#facc15",
+    color: "#1c1917",
+    outline: "2px solid #a16207",
+    outlineOffset: "-1px",
+  },
+});
+
+const searchPhrases = EditorState.phrases.of({
+  Find: "查找",
+  Replace: "替换",
+  next: "下一个",
+  previous: "上一个",
+  all: "全部",
+  "match case": "区分大小写",
+  regexp: "正则",
+  "by word": "整词",
+  replace: "替换",
+  "replace all": "全部替换",
+  close: "关闭",
 });
 
 const modeExtensions = (readOnly: boolean, ariaLabel: string): Extension => [
@@ -121,6 +303,8 @@ export default function TextEditor({
   ariaLabel,
   onDocumentChange,
   onEscape,
+  searchOpen = false,
+  onSearchOpenChange = () => undefined,
 }: {
   initialContent: string;
   format: SwitchableFormat | null;
@@ -128,6 +312,8 @@ export default function TextEditor({
   ariaLabel: string;
   onDocumentChange: (snapshot: TextSnapshot) => void;
   onEscape: () => void;
+  searchOpen?: boolean;
+  onSearchOpenChange?: (open: boolean) => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -135,8 +321,12 @@ export default function TextEditor({
   const languageRef = useRef(new Compartment());
   const onDocumentChangeRef = useRef(onDocumentChange);
   const onEscapeRef = useRef(onEscape);
+  const searchOpenRef = useRef(searchOpen);
+  const onSearchOpenChangeRef = useRef(onSearchOpenChange);
   onDocumentChangeRef.current = onDocumentChange;
   onEscapeRef.current = onEscape;
+  searchOpenRef.current = searchOpen;
+  onSearchOpenChangeRef.current = onSearchOpenChange;
 
   useEffect(() => {
     const parent = parentRef.current;
@@ -159,7 +349,11 @@ export default function TextEditor({
         }),
         lineNumbers(),
         syntaxHighlighting(highlightStyle),
-        keymap.of(searchKeymap),
+        searchPhrases,
+        keymap.of([
+          { key: "Mod-f", run: openSearchKeepingPagePosition, scope: "editor search-panel" },
+          ...searchKeymap,
+        ]),
         keymap.of([{
           key: "Escape",
           run: () => {
@@ -170,6 +364,11 @@ export default function TextEditor({
         languageRef.current.of(languageExtensions(format)),
         modeRef.current.of(modeExtensions(readOnly, ariaLabel)),
         EditorView.updateListener.of((update) => {
+          const panelOpen = searchPanelOpen(update.state);
+          if (panelOpen !== searchOpenRef.current) {
+            searchOpenRef.current = panelOpen;
+            onSearchOpenChangeRef.current(panelOpen);
+          }
           if (update.docChanged) {
             const document = update.state.doc;
             onDocumentChangeRef.current(() => document.toString());
@@ -202,6 +401,13 @@ export default function TextEditor({
       effects: languageRef.current.reconfigure(languageExtensions(format)),
     });
   }, [format]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || searchPanelOpen(view.state) === searchOpen) return;
+    if (searchOpen) openSearchKeepingPagePosition(view);
+    else closeSearchPanel(view);
+  }, [searchOpen]);
 
   return <div ref={parentRef} className="-ml-10 min-h-0 min-w-0 flex-1 overflow-hidden" />;
 }
