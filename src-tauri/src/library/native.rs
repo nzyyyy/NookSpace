@@ -25,13 +25,19 @@ pub(super) fn is_media(mime: &str, name: &str) -> bool {
 }
 
 pub(super) fn is_text_file(mime: &str, name: &str) -> bool {
-    const TEXT_EXTENSIONS: &[&str] =
-        &["txt", "md", "markdown", "log", "csv", "json", "yaml", "yml"];
+    const TEXT_EXTENSIONS: &[&str] = &[
+        "txt", "md", "markdown", "log", "html", "htm", "csv", "json", "yaml", "yml",
+    ];
     let extension = file_extension(name);
     mime.starts_with("text/")
         || mime == "application/json"
         || mime == "application/yaml"
         || TEXT_EXTENSIONS.contains(&extension.as_str())
+}
+
+pub(super) fn is_html_file(mime: &str, name: &str) -> bool {
+    let extension = file_extension(name);
+    mime.eq_ignore_ascii_case("text/html") || matches!(extension.as_str(), "html" | "htm")
 }
 
 pub(super) fn file_extension(name: &str) -> String {
@@ -200,6 +206,9 @@ pub fn write_text_file(
         || !is_text_file(&item.mime, &item.stored_path)
     {
         return Err("此类型不支持内置文本编辑".into());
+    }
+    if is_html_file(&item.mime, &item.stored_path) {
+        return Err("HTML 文件仅支持阅读".into());
     }
     if item.deleted_at.is_some() {
         return Err("回收站中的文件不可编辑".into());

@@ -30,9 +30,11 @@ import {
   canonicalFormat,
   displayStem,
   fileExtension,
+  isHtmlFile,
   isLargeTextFile,
   isSwitchableText,
   SWITCHABLE_FORMATS,
+  type SwitchableFormat,
 } from "@/lib/file-types";
 import { useLibrary } from "@/stores/library";
 import { useUi } from "@/stores/ui";
@@ -52,6 +54,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Popover,
   PopoverContent,
@@ -256,6 +266,7 @@ function FileIdentity({ item }: { item: Item }) {
   const currentFormat = canonicalFormat(fileExtension(item.storedPath || item.title));
   const ext = fileExtension(item.storedPath || item.title);
   const [stem, setStem] = useState(displayStem(item.title, item.storedPath));
+  const [pendingFormat, setPendingFormat] = useState<SwitchableFormat | null>(null);
   const committed = displayStem(item.title, item.storedPath);
   const trashed = Boolean(item.deletedAt);
   const showTitleInput = !trashed && (!switchable || noteMode === "edit");
@@ -263,6 +274,8 @@ function FileIdentity({ item }: { item: Item }) {
   useEffect(() => {
     setStem(displayStem(item.title, item.storedPath));
   }, [item.id, item.title, item.storedPath]);
+
+  useEffect(() => setPendingFormat(null), [item.id]);
 
   const commit = async (nextStem = stem, format: string | null = null) => {
     const trimmed = nextStem.trim() || "无标题";
@@ -309,7 +322,10 @@ function FileIdentity({ item }: { item: Item }) {
           <DropdownMenuContent align="end" className="min-w-32">
             <DropdownMenuRadioGroup
               value={currentFormat ?? "md"}
-              onValueChange={(value) => void commit(stem, value)}
+              onValueChange={(value) => {
+                const format = canonicalFormat(value);
+                if (format && format !== currentFormat) setPendingFormat(format);
+              }}
             >
               {SWITCHABLE_FORMATS.map((format) => (
                 <DropdownMenuRadioItem key={format} value={format}>
@@ -322,6 +338,25 @@ function FileIdentity({ item }: { item: Item }) {
       ) : (
         <span className="font-mono text-[11px] text-muted-foreground">{ext.toUpperCase() || "FILE"}</span>
       )}
+      <Dialog open={pendingFormat !== null} onOpenChange={(open) => !open && setPendingFormat(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-[15px] font-medium">切换文件格式？</DialogTitle>
+            <DialogDescription>
+              将从 {FORMAT_LABEL[currentFormat ?? ""] ?? ext.toUpperCase()} 切换为 {pendingFormat ? FORMAT_LABEL[pendingFormat] : ""}。
+              此操作只会修改扩展名，不会转换文件内容，可能影响其他应用打开。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setPendingFormat(null)}>取消</Button>
+            <Button onClick={() => {
+              const format = pendingFormat;
+              setPendingFormat(null);
+              if (format) void commit(stem, format);
+            }}>确认切换</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -737,6 +772,56 @@ function TextFileEditor({
   );
 }
 
+function HtmlFileReader({ item }: { item: Item }) {
+  const [content, setContent] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setLoadError(null);
+    void ipc.readTextFile(item.id)
+      .then((document) => {
+        if (alive) setContent(document.content);
+      })
+      .catch((error) => {
+        if (alive) setLoadError(String(error));
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [item.id]);
+
+  if (loading) {
+    return <p className="py-12 text-center font-mono text-[11px] text-muted-foreground">正在载入 HTML…</p>;
+  }
+  if (loadError) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 py-12 text-center">
+        <FileIcon className="size-12 text-muted-foreground/40" />
+        <p className="max-w-md text-[12px] text-muted-foreground">{loadError}</p>
+        <Button variant="outline" size="sm" onClick={() => void ipc.openWithDefault(item.id)}>
+          <ExternalLink className="size-3.5" /> 用默认应用打开
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <iframe
+      title={`阅读 ${item.title}`}
+      sandbox="allow-scripts"
+      referrerPolicy="no-referrer"
+      srcDoc={content}
+      className="min-h-0 w-full flex-1 border-0 bg-white"
+    />
+  );
+}
+
 function FilePreview({
   item,
   headerActions,
@@ -745,6 +830,7 @@ function FilePreview({
   headerActions: HTMLDivElement | null;
 }) {
   const [absPath, setAbsPath] = useState<string | null>(null);
+  const html = isHtmlFile(item.mime, item.storedPath || item.title);
   const usesAssetPreview = item.mime.startsWith("image/") || item.mime === "application/pdf";
 
   useEffect(() => {
@@ -762,6 +848,9 @@ function FilePreview({
     };
   }, [item.id, usesAssetPreview]);
 
+  if (html) {
+    return <HtmlFileReader key={item.id} item={item} />;
+  }
   if (!usesAssetPreview) {
     return <TextFileEditor key={item.id} item={item} headerActions={headerActions} />;
   }
@@ -844,6 +933,7 @@ export function DetailPane() {
   const [fileHeaderActions, setFileHeaderActions] = useState<HTMLDivElement | null>(null);
 
   const isTrashed = item ? item.deletedAt !== null : false;
+  const html = item?.itemType === "file" && isHtmlFile(item.mime, item.storedPath || item.title);
 
   return (
     <section
@@ -924,6 +1014,10 @@ export function DetailPane() {
         ) : (
           <EmptyDetail />
         )
+      ) : html ? (
+        <div className="flex min-h-0 flex-1">
+          <HtmlFileReader key={item.id} item={item} />
+        </div>
       ) : (
       <div className="flex min-h-0 flex-1 flex-col">
         <ScrollArea

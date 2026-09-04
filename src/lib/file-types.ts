@@ -17,6 +17,11 @@ export function isMediaFile(mime: string, name: string): boolean {
   return mime.startsWith("audio/") || mime.startsWith("video/") || MEDIA_EXTENSIONS.has(extension);
 }
 
+export function isHtmlFile(mime: string, name: string): boolean {
+  const extension = fileExtension(name);
+  return mime === "text/html" || extension === "html" || extension === "htm";
+}
+
 export function fileExtension(name: string): string {
   const base = name.split(/[/\\]/).pop() ?? name;
   const index = base.lastIndexOf(".");

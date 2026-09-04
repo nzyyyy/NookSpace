@@ -1280,6 +1280,39 @@ mod tests {
     }
 
     #[test]
+    fn html_files_are_read_only() {
+        let (temp, lib) = disk_library();
+        let source = temp.0.join("page.HTM");
+        let original = b"<!doctype html><h1>read only</h1>";
+        fs::write(&source, original).unwrap();
+        let item = lib
+            .import_files(&[source.to_string_lossy().to_string()], None)
+            .unwrap()
+            .imported
+            .remove(0)
+            .item;
+
+        let document = lib.read_text_file(&item.id).unwrap();
+        assert_eq!(document.content, "<!doctype html><h1>read only</h1>");
+        assert_eq!(
+            lib.write_text_file(
+                &item.id,
+                "changed",
+                &document.version,
+                &document.encoding,
+                &document.line_ending,
+            )
+            .unwrap_err(),
+            "HTML 文件仅支持阅读"
+        );
+        assert_eq!(
+            fs::read(lib.safe_stored_path(&item.stored_path).unwrap()).unwrap(),
+            original
+        );
+        assert!(lib.rename_file(&item.id, "page", Some("md")).is_err());
+    }
+
+    #[test]
     fn text_file_reader_rejects_invalid_encoding_and_large_files() {
         let (_temp, lib) = disk_library();
         let invalid = lib.root.join("files/invalid/data.json");
