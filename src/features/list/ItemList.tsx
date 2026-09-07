@@ -244,29 +244,47 @@ function ItemCard({
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [thumbnail, setThumbnail] = useState<string | null>(null);
+  const [textPreview, setTextPreview] = useState("");
   const unlocked = useLibrary((state) => state.lockSession.unlocked);
   const protectedLocked = item.effectiveLocked && !unlocked;
   const concealed = (item.collectionLocked || item.isPrivate) && !unlocked;
 
   useEffect(() => {
+    setTextPreview("");
+    setThumbnail(null);
     if (protectedLocked) {
-      setThumbnail(null);
       return;
     }
     if (item.itemType !== "file" || isMediaFile(item.mime, item.storedPath || item.title) || !ref.current) return;
+    let cancelled = false;
     const observer = new IntersectionObserver(([entry]) => {
       if (!entry.isIntersecting) return;
       observer.disconnect();
-      void ipc.generateThumbnail(item.id).then((path) => setThumbnail(path ? convertFileSrc(path) : null)).catch(() => undefined);
+      const loadThumbnail = () => {
+        void ipc.generateThumbnail(item.id)
+          .then((path) => { if (!cancelled) setThumbnail(path ? convertFileSrc(path) : null); })
+          .catch(() => undefined);
+      };
+      if (item.mime.startsWith("image/") || item.mime === "application/pdf") {
+        loadThumbnail();
+      } else {
+        void ipc.readTextFile(item.id)
+          .then((document) => { if (!cancelled) setTextPreview(document.content.slice(0, 240)); })
+          .catch(loadThumbnail);
+      }
     }, { rootMargin: "120px" });
     observer.observe(ref.current);
-    return () => observer.disconnect();
-  }, [protectedLocked, item.id, item.itemType, item.mime, item.storedPath, item.title]);
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+    };
+  }, [protectedLocked, item.id, item.itemType, item.mime, item.storedPath, item.title, item.updatedAt]);
 
+  const previewContent = textPreview || item.contentPreview;
   let secondary = "";
   if (snippet) secondary = snippet;
-  else if (item.itemType === "file" && item.contentPreview.trim()) {
-    secondary = item.contentPreview.replace(/\s+/g, " ").trim();
+  else if (item.itemType === "file" && previewContent.trim()) {
+    secondary = previewContent.replace(/\s+/g, " ").trim();
   } else if (item.itemType === "link") {
     try { secondary = new URL(item.url).hostname; } catch { secondary = metaLine(item, concealed); }
   } else secondary = metaLine(item, concealed);
@@ -279,7 +297,7 @@ function ItemCard({
       onClick={onActivate}
       style={{ contentVisibility: "auto" }}
       className={cn(
-        "group flex min-h-44 cursor-default flex-col overflow-hidden rounded-lg border bg-card select-none group-data-[state=open]/item-menu:bg-accent",
+        "group flex cursor-default flex-col overflow-hidden rounded-lg border bg-card select-none group-data-[state=open]/item-menu:bg-accent",
         selected || multi ? "border-primary/50 ring-2 ring-primary/20" : "border-border hover:border-foreground/20",
       )}
     >
@@ -288,7 +306,7 @@ function ItemCard({
           <Lock className="size-8 text-muted-foreground/50" />
         ) : thumbnail ? (
           <img src={thumbnail} alt="" className="size-full object-cover" draggable={false} />
-        ) : item.itemType === "file" && item.contentPreview.trim() ? (
+        ) : item.itemType === "file" && (snippet || previewContent.trim()) ? (
           <p className="line-clamp-4 px-4 text-[12px] leading-5 text-muted-foreground">{secondary}</p>
         ) : item.itemType === "link" ? (
           <Link2 className="size-8 text-muted-foreground/50" />
@@ -302,7 +320,6 @@ function ItemCard({
           {protectedLocked ? <Lock className="size-3 text-muted-foreground" /> : null}
           {item.isFavorite ? <Star className="size-3 fill-primary text-primary" /> : null}
         </div>
-        <span className="line-clamp-2 font-mono text-[10.5px] text-muted-foreground"><Highlight text={secondary} terms={terms} /></span>
         {item.tags.length > 0 ? (
           <div className="mt-auto flex gap-1 overflow-hidden pt-1">
             {item.tags.slice(0, 2).map((tag) => (
@@ -705,7 +722,9 @@ export function ItemList() {
       )}
 
       {/* Rows */}
-      <ScrollArea className="flex-1">
+      <ScrollArea
+        className="min-h-0 flex-1 [&_[data-slot=scroll-area-scrollbar]]:w-1.5 [&_[data-slot=scroll-area-scrollbar]]:py-3 [&_[data-slot=scroll-area-thumb]]:bg-muted-foreground/45"
+      >
         {!ready ? (
           <div className="flex flex-col gap-2 p-2">
             <Skeleton className="h-9 w-full" />
