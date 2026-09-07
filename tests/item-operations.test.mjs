@@ -99,6 +99,62 @@ test("changing views clears an invalidated detail loading state", () => {
   assert.equal(store.getState().detailLoading, false);
 });
 
+test("ordinary view changes clear the query while an explicit scope expansion preserves it", async () => {
+  const filters = [];
+  const { store } = setup({
+    listItems: async (filter) => {
+      filters.push(filter);
+      return { entries: [], truncated: false };
+    },
+  });
+
+  store.getState().setQuery("needle");
+  store.getState().setView({ kind: "favorites" });
+  assert.equal(store.getState().query, "");
+  await new Promise((resolve) => setTimeout(resolve, 220));
+  assert.equal(filters.length, 1);
+  assert.equal(filters[0].view, "favorites");
+  assert.equal(filters[0].query, null);
+
+  store.setState({ query: "needle" });
+  store.getState().setView({ kind: "all" }, { preserveQuery: true });
+  assert.equal(store.getState().query, "needle");
+  await tick();
+  assert.equal(filters.at(-1).view, "all");
+  assert.equal(filters.at(-1).query, "needle");
+});
+
+test("saved views restore their own query, sort, and scope", async () => {
+  const filters = [];
+  const { store } = setup({
+    listItems: async (filter) => {
+      filters.push(filter);
+      return { entries: [], truncated: false };
+    },
+  });
+  store.setState({
+    query: "stale",
+    sort: "updated",
+    savedViews: [{
+      id: "saved-1",
+      name: "PDF",
+      query: "type:pdf",
+      sort: "title",
+      view: "collection",
+      collectionId: "collection-1",
+      tagId: null,
+    }],
+  });
+
+  store.getState().setView({ kind: "saved", id: "saved-1" });
+  assert.equal(store.getState().query, "type:pdf");
+  assert.equal(store.getState().sort, "title");
+  await tick();
+  assert.equal(filters.at(-1).view, "all");
+  assert.equal(filters.at(-1).query, "type:pdf");
+  assert.equal(filters.at(-1).collectionId, "collection-1");
+});
+
 test("refresh detail and locked-session responses cannot overwrite a newer or cleared detail", async () => {
   const a = deferred();
   const b = deferred();

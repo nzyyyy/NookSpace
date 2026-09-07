@@ -117,6 +117,33 @@ function extOf(item: ItemSummary): string {
   return fileExtension(item.storedPath || item.title).toUpperCase();
 }
 
+function fullNameOf(item: ItemSummary): string {
+  return item.storedPath.split(/[/\\]/).pop() || item.title || "无标题";
+}
+
+function searchScopeLabel(view: View): string {
+  switch (view.kind) {
+    case "all":
+      return "搜索整个资料库";
+    case "favorites":
+      return "在收藏中搜索";
+    case "privacy":
+      return "在保险箱搜索";
+    case "recent":
+      return "在最近项目中搜索";
+    case "uncollected":
+      return "在未分类中搜索";
+    case "trash":
+      return "在回收站搜索";
+    case "collection":
+      return "在当前集合搜索";
+    case "tag":
+      return "在当前标签搜索";
+    case "saved":
+      return "在当前保存搜索中搜索";
+  }
+}
+
 function metaLine(item: ItemSummary, concealed = false): string {
   if (concealed) return "已锁定";
   const rel = formatRelativeDate(item.updatedAt);
@@ -175,9 +202,14 @@ function ItemRow({
     >
       <div className="flex items-center gap-2">
         <TypeIcon item={item} className="size-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium">
-          <Highlight text={displayStem(item.title, item.storedPath) || "无标题"} terms={terms} />
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium" tabIndex={0}>
+              <Highlight text={displayStem(item.title, item.storedPath) || "无标题"} terms={terms} />
+            </span>
+          </TooltipTrigger>
+          {!concealed && <TooltipContent className="max-w-sm break-all">{fullNameOf(item)}</TooltipContent>}
+        </Tooltip>
         {protectedLocked && !concealed ? <Lock className="size-3 text-muted-foreground" /> : null}
         <button
           disabled={protectedLocked}
@@ -200,11 +232,11 @@ function ItemRow({
           />
         </button>
       </div>
-      <div className="font-mono text-[11px] tracking-tight text-muted-foreground">
+      <div className="font-mono text-[12px] tracking-tight text-muted-foreground">
         {metaLine(item, concealed)}
       </div>
       {snippet && (
-        <div className="line-clamp-2 text-[11.5px] leading-4 text-muted-foreground">
+        <div className="line-clamp-2 text-[12px] leading-4 text-muted-foreground">
           <Highlight text={snippet} terms={terms} />
         </div>
       )}
@@ -213,13 +245,13 @@ function ItemRow({
           {item.tags.slice(0, 3).map((t) => (
             <span
               key={t.id}
-              className={cn("rounded px-1 py-px text-[10.5px]", tagBadgeClass(t.color))}
+              className={cn("rounded px-1 py-px text-[12px]", tagBadgeClass(t.color))}
             >
               {t.name}
             </span>
           ))}
           {item.tags.length > 3 && (
-            <span className="text-[10.5px] text-muted-foreground">+{item.tags.length - 3}</span>
+            <span className="text-[12px] text-muted-foreground">+{item.tags.length - 3}</span>
           )}
         </div>
       )}
@@ -316,14 +348,19 @@ function ItemCard({
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-1 p-2.5">
         <div className="flex items-center gap-1.5">
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium"><Highlight text={displayStem(item.title, item.storedPath) || "无标题"} terms={terms} /></span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium" tabIndex={0}><Highlight text={displayStem(item.title, item.storedPath) || "无标题"} terms={terms} /></span>
+            </TooltipTrigger>
+            {!concealed && <TooltipContent className="max-w-sm break-all">{fullNameOf(item)}</TooltipContent>}
+          </Tooltip>
           {protectedLocked ? <Lock className="size-3 text-muted-foreground" /> : null}
           {item.isFavorite ? <Star className="size-3 fill-primary text-primary" /> : null}
         </div>
         {item.tags.length > 0 ? (
           <div className="mt-auto flex gap-1 overflow-hidden pt-1">
             {item.tags.slice(0, 2).map((tag) => (
-              <span key={tag.id} className={cn("truncate rounded px-1 py-px text-[10px]", tagBadgeClass(tag.color))}>{tag.name}</span>
+              <span key={tag.id} className={cn("truncate rounded px-1 py-px text-[12px]", tagBadgeClass(tag.color))}>{tag.name}</span>
             ))}
           </div>
         ) : null}
@@ -498,6 +535,7 @@ export function ItemList() {
     selectedId,
     multiIds,
     setQuery,
+    setView,
     setSort,
     select,
     toggleMulti,
@@ -517,6 +555,8 @@ export function ItemList() {
   } = useLibrary();
 
   const title = viewTitle(view, collections, tags, savedViews);
+  const scopeLabel = searchScopeLabel(view);
+  const hasQuery = Boolean(query.trim());
   const isTrash = view.kind === "trash";
   const isPrivacy = view.kind === "privacy";
   const collectionLocked = view.kind === "collection"
@@ -529,6 +569,7 @@ export function ItemList() {
   const lockableBatchLocked = lockableBatch.length > 0
     && lockableBatch.every((id) => items.find((item) => item.id === id)?.isLocked);
   const batchSet = useMemo(() => new Set(batch), [batch]);
+  const searchEntireLibrary = () => setView({ kind: "all" }, { preserveQuery: true });
 
   const handleActivate = (id: string) => (e: React.MouseEvent) => {
     if (e.metaKey || e.ctrlKey) void toggleMulti(id, true, false);
@@ -664,7 +705,7 @@ export function ItemList() {
         ) : (
           <>
             <h1 className="min-w-0 truncate text-[15px] font-medium tracking-tight">{title}</h1>
-            <span className="font-mono text-[11px] text-muted-foreground">{items.length}</span>
+            <span className="font-mono text-[12px] text-muted-foreground">{items.length}</span>
             <div data-pane-spacer className="flex-1" />
             {!isTrash && !viewLocked && !isPrivacy && (
               <CreateMenu />
@@ -686,7 +727,15 @@ export function ItemList() {
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-1 px-3 pt-2">
+      <div className="flex shrink-0 items-center justify-between gap-2 px-4 pt-2 text-[12px] text-muted-foreground">
+        <span>{scopeLabel}</span>
+        {view.kind !== "all" && !viewLocked && (
+          <Button variant="link" size="xs" className="h-auto p-0 text-[12px] text-foreground/75" onClick={searchEntireLibrary}>
+            搜索整个资料库
+          </Button>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-1 px-3 pt-1">
         <Input
           id="list-search"
           value={query}
@@ -695,7 +744,7 @@ export function ItemList() {
           disabled={viewLocked}
           className="h-7 min-w-0 flex-1 text-[13px]"
         />
-        {!isTrash && !isPrivacy && query.trim() && (
+        {!isTrash && !isPrivacy && hasQuery && (
           <Button variant="ghost" size="icon-sm" onClick={() => {
             setSaveName(query.trim());
             setSaveOpen(true);
@@ -711,7 +760,7 @@ export function ItemList() {
         />
       </div>
       {listTruncated && (
-        <p className="px-4 pt-1 font-mono text-[10.5px] text-muted-foreground">仅显示前 500 条，请继续细化搜索</p>
+        <p className="px-4 pt-1 font-mono text-[12px] text-muted-foreground">仅显示前 500 条，请继续细化搜索</p>
       )}
 
       {operationBusy && <p role="status" className="px-4 pt-1 text-xs text-muted-foreground">正在处理，请稍候…</p>}
@@ -748,7 +797,7 @@ export function ItemList() {
               <LockOpen className="size-4" /> {privacyLocked ? "解锁保险箱" : "解锁"}
             </Button>
           </div>
-        ) : items.length === 0 && !isTrash && !query ? (
+        ) : items.length === 0 && !isTrash && !hasQuery ? (
           <EmptyState view={view} />
         ) : (
           <div className={cn(listLayout === "grid" ? "grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2 p-3" : "flex flex-col gap-px p-2")}>
@@ -772,10 +821,16 @@ export function ItemList() {
               </ItemContextMenu>
             ))}
             {items.length === 0 && (
-              <div className="px-4 py-10 text-center">
+              <div className="flex flex-col items-center gap-3 px-4 py-10 text-center">
                 <p className="text-[13px] text-muted-foreground">
-                  {isTrash && !query ? "回收站是空的" : "没有匹配的结果"}
+                  {isTrash && !hasQuery ? "回收站是空的" : "没有匹配的结果"}
                 </p>
+                {hasQuery && (
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setQuery("")}>清除条件</Button>
+                    {view.kind !== "all" && <Button variant="ghost" size="sm" onClick={searchEntireLibrary}>扩大范围</Button>}
+                  </div>
+                )}
               </div>
             )}
           </div>

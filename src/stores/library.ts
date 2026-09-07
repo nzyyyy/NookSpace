@@ -110,7 +110,7 @@ interface LibraryState {
   init: () => Promise<void>;
   refresh: (strict?: boolean) => Promise<void>;
   refreshMeta: () => Promise<void>;
-  setView: (view: View) => void;
+  setView: (view: View, options?: { preserveQuery?: boolean }) => void;
   setQuery: (q: string) => void;
   setSort: (s: SortKey) => void;
   select: (id: string | null) => Promise<void>;
@@ -384,12 +384,14 @@ export const useLibrary = create<LibraryState>((set, get) => {
       set({ collections, tags, savedViews });
     },
 
-    setView: (view) => {
+    setView: (view, options) => {
+      clearTimeout(queryTimer);
+      queryTimer = undefined;
       detailRequest++;
       const saved = view.kind === "saved" ? get().savedViews.find((item) => item.id === view.id) : null;
       set({
         view,
-        query: saved?.query ?? get().query,
+        query: saved?.query ?? (options?.preserveQuery ? get().query : ""),
         sort: saved?.sort ?? get().sort,
         multiIds: [],
         multiAnchor: null,
