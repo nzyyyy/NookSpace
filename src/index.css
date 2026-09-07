@@ -228,6 +228,52 @@
     border-radius: var(--radius);
   }
 
+  .markdown-mermaid {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--background);
+  }
+
+  .markdown-mermaid-zoom {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--muted);
+    padding: 0.4rem 0.65rem;
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+  }
+
+  .markdown-mermaid-zoom input {
+    width: 8rem;
+    accent-color: var(--primary);
+  }
+
+  .markdown-mermaid-zoom output {
+    min-width: 3rem;
+  }
+
+  .markdown-mermaid-viewport {
+    max-height: min(70vh, 640px);
+    overflow: hidden;
+    padding: 1rem;
+  }
+
+  .markdown-mermaid-canvas {
+    width: 100%;
+    margin-inline: auto;
+  }
+
+  .markdown-mermaid-canvas svg {
+    display: block;
+    width: 100%;
+    max-width: none !important;
+    height: auto;
+  }
+
   .markdown-image-unavailable,
   .markdown-block-warning {
     display: block;

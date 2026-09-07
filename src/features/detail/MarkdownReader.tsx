@@ -10,6 +10,7 @@ import {
   type MouseEvent,
 } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import Panzoom, { type PanzoomObject } from "@panzoom/panzoom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowUp, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,29 @@ import type { MarkdownBlock, MarkdownWorkerMessage } from "./markdown-render";
 import { searchMarkdownBlocks, type MarkdownSearchMatch } from "./markdown-search";
 
 const TextEditor = lazy(() => import("./TextEditor"));
+let mermaidPromise: ReturnType<typeof importMermaid> | undefined;
+let mermaidDiagramId = 0;
+
+async function importMermaid() {
+  const { default: mermaid } = await import("mermaid");
+  return mermaid;
+}
+
+function loadMermaid() {
+  mermaidPromise ??= importMermaid();
+  return mermaidPromise;
+}
+
+function useDarkTheme() {
+  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
+  useEffect(() => {
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => setDark(root.classList.contains("dark")));
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+  return dark;
+}
 
 function canOpen(url: string) {
   try {
@@ -30,7 +54,7 @@ function canOpen(url: string) {
 type HighlightMatch = Pick<MarkdownSearchMatch, "from" | "to"> & { active: boolean };
 const NO_MATCHES: HighlightMatch[] = [];
 
-function RenderedBlock({ block, matches }: { block: MarkdownBlock; matches: HighlightMatch[] }) {
+function RenderedHtmlBlock({ block, matches }: { block: MarkdownBlock; matches: HighlightMatch[] }) {
   const ref = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -79,6 +103,123 @@ function RenderedBlock({ block, matches }: { block: MarkdownBlock; matches: High
   );
 }
 
+function MermaidBlock({ block, dark }: { block: MarkdownBlock; dark: boolean }) {
+  const [id] = useState(() => `markdown-mermaid-${mermaidDiagramId += 1}`);
+  const [svg, setSvg] = useState("");
+  const [failed, setFailed] = useState(false);
+  const [zoom, setZoom] = useState(100);
+  const zoomRef = useRef(zoom);
+  const panzoomRef = useRef<PanzoomObject>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setSvg("");
+    setFailed(false);
+    void loadMermaid()
+      .then((mermaid) => {
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          suppressErrorRendering: true,
+          theme: dark ? "dark" : "neutral",
+        });
+        return mermaid.render(id, block.mermaidSource ?? "");
+      })
+      .then((result) => {
+        if (alive) setSvg(result.svg);
+      })
+      .catch(() => {
+        if (alive) setFailed(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [block.mermaidSource, dark, id]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    const canvas = canvasRef.current;
+    if (!viewport || !canvas || !svg) return;
+    const panzoom = Panzoom(canvas, {
+      canvas: true,
+      minScale: 0.5,
+      maxScale: 2,
+      startScale: zoomRef.current / 100,
+      step: 0.2,
+      pinchAndPan: true,
+    });
+    panzoomRef.current = panzoom;
+    const syncZoom = (event: Event) => {
+      const scale = (event as CustomEvent<{ scale: number }>).detail.scale;
+      zoomRef.current = scale * 100;
+      setZoom(zoomRef.current);
+    };
+    const navigateWithTrackpad = (event: WheelEvent) => {
+      event.preventDefault();
+      if (event.ctrlKey) {
+        panzoom.zoomWithWheel(event);
+      } else {
+        const { x, y } = panzoom.getPan();
+        const scale = panzoom.getScale();
+        panzoom.pan(x - event.deltaX / scale, y - event.deltaY / scale);
+      }
+    };
+    canvas.addEventListener("panzoomchange", syncZoom);
+    viewport.addEventListener("wheel", navigateWithTrackpad, { passive: false });
+    return () => {
+      canvas.removeEventListener("panzoomchange", syncZoom);
+      viewport.removeEventListener("wheel", navigateWithTrackpad);
+      panzoom.destroy();
+      panzoomRef.current = null;
+    };
+  }, [svg]);
+
+  return (
+    <div className="markdown-block" data-markdown-block={block.kind}>
+      {svg ? (
+        <div className="markdown-mermaid">
+          <label className="markdown-mermaid-zoom">
+            <span>缩放</span>
+            <input
+              type="range"
+              min="50"
+              max="200"
+              step="1"
+              value={zoom}
+              onChange={(event) => {
+                zoomRef.current = Number(event.target.value);
+                setZoom(zoomRef.current);
+                panzoomRef.current?.zoom(zoomRef.current / 100, { animate: false });
+              }}
+            />
+            <output>{Math.round(zoom)}%</output>
+          </label>
+          <div ref={viewportRef} className="markdown-mermaid-viewport" role="img" aria-label="Mermaid 图表">
+            <div
+              ref={canvasRef}
+              className="markdown-mermaid-canvas"
+              dangerouslySetInnerHTML={{ __html: svg }}
+            />
+          </div>
+        </div>
+      ) : (
+        <>
+          {failed && <p className="markdown-block-warning" role="alert">Mermaid 图表无法渲染，已显示源码。</p>}
+          <div dangerouslySetInnerHTML={{ __html: block.html }} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function RenderedBlock({ block, matches, dark }: { block: MarkdownBlock; matches: HighlightMatch[]; dark: boolean }) {
+  return block.mermaidSource === undefined
+    ? <RenderedHtmlBlock block={block} matches={matches} />
+    : <MermaidBlock block={block} dark={dark} />;
+}
+
 export default function MarkdownReader({
   content,
   ariaLabel,
@@ -94,6 +235,7 @@ export default function MarkdownReader({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const dark = useDarkTheme();
   const blocksRef = useRef<MarkdownBlock[]>([]);
   const [count, setCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -210,12 +352,31 @@ export default function MarkdownReader({
 
   const openMarkdownLink = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target instanceof Element
-      ? event.target.closest<HTMLAnchorElement>("a[data-markdown-link='external']")
+      ? event.target.closest<HTMLAnchorElement>("a[data-markdown-link]")
       : null;
     if (!target) return;
     event.preventDefault();
     const href = target.getAttribute("href") ?? "";
-    if (canOpen(href)) void openUrl(href);
+    if (target.dataset.markdownLink === "external") {
+      if (canOpen(href)) void openUrl(href);
+      return;
+    }
+    let anchor = href.slice(1);
+    try {
+      anchor = decodeURIComponent(anchor);
+    } catch {
+      return;
+    }
+    const blockIndex = blocksRef.current.findIndex((block) => block.anchorIds?.includes(anchor));
+    if (blockIndex < 0) return;
+    if (large) virtualizer.scrollToIndex(blockIndex, { align: "start" });
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const heading = Array.from(scrollRef.current?.querySelectorAll<HTMLElement>("[id]") ?? [])
+          .find((element) => element.id === anchor);
+        heading?.scrollIntoView({ block: "start", inline: "nearest" });
+      });
+    });
   };
 
   if (error) {
@@ -351,7 +512,7 @@ export default function MarkdownReader({
                   className="absolute left-0 top-0 w-full"
                   style={{ transform: `translateY(${item.start}px)` }}
                 >
-                  <RenderedBlock block={block} matches={matchesByBlock.get(item.index) ?? NO_MATCHES} />
+                  <RenderedBlock block={block} matches={matchesByBlock.get(item.index) ?? NO_MATCHES} dark={dark} />
                 </div>
               );
             })}
@@ -362,6 +523,7 @@ export default function MarkdownReader({
               key={blocksRef.current[index].key}
               block={blocksRef.current[index]}
               matches={matchesByBlock.get(index) ?? NO_MATCHES}
+              dark={dark}
             />
           ))
         )}

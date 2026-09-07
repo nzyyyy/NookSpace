@@ -28,7 +28,7 @@ const value = 1;
 
   assert.deepEqual(blocks.map((block) => block.kind), ["heading", "bullet_list", "table", "blockquote", "fence"]);
   assert.equal(blocks.filter((block) => block.kind === "bullet_list").length, 1);
-  assert.match(html, /<h1>标题<\/h1>/);
+  assert.match(html, /<h1 id="标题">标题<\/h1>/);
   assert.match(html, /class="task-list"/);
   assert.match(html, /type="checkbox"[^>]*checked/);
   assert.match(html, /<strong>粗体<\/strong>/);
@@ -72,6 +72,38 @@ test("escapes raw HTML and limits links and images to allowed protocols", () => 
   assert.match(html, /src="https:\/\/example\.com\/a\.png"/);
   assert.match(html, /loading="lazy"/);
   assert.equal((html.match(/markdown-image-unavailable/g) ?? []).length, 2);
+});
+
+test("renders same-document anchors with unique heading ids", () => {
+  const blocks = renderMarkdownBlocks(`[章节](#一项目定位它为模型补齐了什么)
+
+# 一、项目定位：它为模型补齐了什么
+
+## **重复** 标题
+
+## 重复 标题`);
+  const html = blocks.map((block) => block.html).join("");
+
+  assert.match(html, /href="#%E4%B8%80%E9%A1%B9%E7%9B%AE%E5%AE%9A%E4%BD%8D%E5%AE%83%E4%B8%BA%E6%A8%A1%E5%9E%8B%E8%A1%A5%E9%BD%90%E4%BA%86%E4%BB%80%E4%B9%88"[^>]*data-markdown-link="anchor"/);
+  assert.match(html, /id="一项目定位它为模型补齐了什么"/);
+  assert.match(html, /id="重复-标题"/);
+  assert.match(html, /id="重复-标题-1"/);
+  assert.deepEqual(blocks.flatMap((block) => block.anchorIds ?? []), [
+    "一项目定位它为模型补齐了什么",
+    "重复-标题",
+    "重复-标题-1",
+  ]);
+});
+
+test("marks Mermaid fences for client-side diagram rendering", () => {
+  const [block] = renderMarkdownBlocks(`\`\`\`mermaid
+flowchart TB
+  A --> B
+\`\`\``);
+
+  assert.equal(block.kind, "fence");
+  assert.equal(block.mermaidSource, "flowchart TB\n  A --> B\n");
+  assert.match(block.html, /language-mermaid/);
 });
 
 test("splits pathological single blocks without splitting surrogate pairs", () => {

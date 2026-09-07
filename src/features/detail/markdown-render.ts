@@ -9,6 +9,8 @@ export interface MarkdownBlock {
   html: string;
   searchText: string;
   kind: string;
+  anchorIds?: string[];
+  mermaidSource?: string;
   estimatedHeight: number;
   sourceLength: number;
   oversized: boolean;
@@ -59,6 +61,8 @@ markdown.renderer.rules.link_open = (tokens, index, options, _env, renderer) => 
     token.attrJoin("class", "markdown-external-link");
     token.attrSet("rel", "noreferrer");
     token.attrSet("data-markdown-link", "external");
+  } else if (href.startsWith("#") && href.length > 1) {
+    token.attrSet("data-markdown-link", "anchor");
   } else {
     const hrefIndex = token.attrIndex("href");
     if (hrefIndex >= 0) token.attrs?.splice(hrefIndex, 1);
@@ -67,6 +71,22 @@ markdown.renderer.rules.link_open = (tokens, index, options, _env, renderer) => 
   }
   return renderer.renderToken(tokens, index, options);
 };
+
+function markHeadingAnchors(tokens: Token[], env: Env) {
+  const used = new Set<string>();
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const inline = tokens[index + 1];
+    if (token.type !== "heading_open" || inline?.type !== "inline") continue;
+    const text = markdown.renderer.renderInlineAsText(inline.children ?? [], markdown.options, env);
+    const base = text.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "");
+    if (!base) continue;
+    let id = base;
+    for (let suffix = 1; used.has(id); suffix += 1) id = `${base}-${suffix}`;
+    used.add(id);
+    token.attrSet("id", id);
+  }
+}
 
 markdown.renderer.rules.image = (tokens, index, options, env, renderer) => {
   const token = tokens[index];
@@ -185,6 +205,7 @@ export function renderMarkdownBlocks(source: string): MarkdownBlock[] {
   const env: Env = {};
   const tokens = markdown.parse(source, env);
   markTaskItems(tokens);
+  markHeadingAnchors(tokens, env);
   const offsets = lineOffsets(source);
   const groups = tokenGroups(tokens);
   if (groups.length > MAX_RENDERED_MARKDOWN_BLOCKS) {
@@ -201,11 +222,21 @@ export function renderMarkdownBlocks(source: string): MarkdownBlock[] {
     }
     const kind = group[0]?.type.replace(/_(?:open|close)$/, "") ?? "paragraph";
     const html = markdown.renderer.render(group, markdown.options, env);
+    const anchorIds = group
+      .filter((token) => token.type === "heading_open")
+      .map((token) => token.attrGet("id"))
+      .filter((id): id is string => Boolean(id));
+    const mermaidSource = group[0]?.type === "fence"
+      && group[0].info.trim().split(/\s+/, 1)[0]?.toLowerCase() === "mermaid"
+      ? group[0].content
+      : undefined;
     return [{
       key,
       html,
       searchText: markdown.utils.unescapeAll(html.replace(/<[^>]*>/g, "")),
       kind,
+      ...(anchorIds.length > 0 ? { anchorIds } : {}),
+      ...(mermaidSource !== undefined ? { mermaidSource } : {}),
       estimatedHeight: estimateHeight(kind, range.lines, html),
       sourceLength: blockSource.length,
       oversized: false,
