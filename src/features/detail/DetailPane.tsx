@@ -101,6 +101,7 @@ function EmptyDetail() {
 }
 
 function TagsEditor({ item }: { item: Item }) {
+  const operationBusy = useLibrary((state) => state.operationBusy);
   const tags = useLibrary((state) => state.tags);
   const setItemTags = useLibrary((state) => state.setItemTags);
 
@@ -135,6 +136,7 @@ function TagsEditor({ item }: { item: Item }) {
                   key={tag.id}
                   type="button"
                   className="flex h-6 items-center gap-1 rounded px-1.5 text-left text-[12.5px] whitespace-nowrap hover:bg-accent"
+                  disabled={operationBusy}
                   aria-pressed={on}
                   onClick={() => toggle(tag.id)}
                 >

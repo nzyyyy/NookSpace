@@ -44,6 +44,7 @@ async function exportItem(item: Item | ItemSummary) {
 }
 
 export function useItemActions(item: Item | ItemSummary): ItemAction[] {
+  const operationBusy = useLibrary((state) => state.operationBusy);
   const unlocked = useLibrary((state) => state.lockSession.unlocked);
   const protectedLocked = item.effectiveLocked && !unlocked;
   const actions: ItemAction[] = [];
@@ -139,21 +140,21 @@ export function useItemActions(item: Item | ItemSummary): ItemAction[] {
   if (item.deletedAt) {
     add({
       key: "restore",
+      disabled: operationBusy,
       label: "放回原处",
       icon: <Undo2 className="size-3.5" />,
       run: () => {
         void useLibrary.getState().restoreItems([item.id]);
-        toast.success("已恢复");
       },
     });
     add({
       key: "purge",
+      disabled: operationBusy,
       label: "永久删除",
       icon: <Trash2 className="size-3.5" />,
       destructive: true,
       run: () => {
         void useLibrary.getState().purgeItems([item.id]);
-        toast.success("已永久删除");
       },
     });
   } else {
@@ -161,11 +162,10 @@ export function useItemActions(item: Item | ItemSummary): ItemAction[] {
       key: "delete",
       label: "移到回收站",
       icon: <Trash2 className="size-3.5" />,
-      disabled: protectedLocked,
+      disabled: protectedLocked || operationBusy,
       destructive: true,
       run: () => {
         void useLibrary.getState().deleteItems([item.id]);
-        toast.info("已移至回收站");
       },
     });
   }

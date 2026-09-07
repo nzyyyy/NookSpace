@@ -266,7 +266,10 @@ pub async fn create_link(
 }
 
 #[tauri::command]
-pub async fn delete_items(state: State<'_, Library>, ids: Vec<String>) -> Result<(), String> {
+pub async fn delete_items(
+    state: State<'_, Library>,
+    ids: Vec<String>,
+) -> Result<Vec<String>, String> {
     let lib = state.inner().clone();
     blocking(lib, move |l| l.delete_items(&ids)).await
 }
@@ -278,9 +281,9 @@ pub async fn restore_items(state: State<'_, Library>, ids: Vec<String>) -> Resul
 }
 
 #[tauri::command]
-pub async fn empty_trash(state: State<'_, Library>) -> Result<(), String> {
+pub async fn empty_trash(state: State<'_, Library>, expected_count: i64) -> Result<(), String> {
     let lib = state.inner().clone();
-    blocking(lib, |l| l.empty_trash()).await
+    blocking(lib, move |l| l.empty_trash(expected_count)).await
 }
 
 #[tauri::command]
@@ -510,4 +513,10 @@ pub async fn file_abs_path(
 ) -> Result<Option<String>, String> {
     let lib = state.inner().clone();
     blocking(lib, move |l| l.file_abs_path(&id)).await
+}
+
+#[tauri::command]
+pub async fn trash_count(state: State<'_, Library>) -> Result<i64, String> {
+    let lib = state.inner().clone();
+    blocking(lib, |l| l.trash_count()).await
 }

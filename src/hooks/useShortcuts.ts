@@ -12,6 +12,7 @@ import { isMediaFile, isSwitchableText } from "@/lib/file-types";
 export function useShortcuts() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (useLibrary.getState().destructiveConfirmation || useLibrary.getState().batchTagDetailsOpen) return;
       const mod = e.metaKey || e.ctrlKey;
       const target = e.target as HTMLElement;
       const inField =

@@ -40,6 +40,64 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[test]
+    fn failed_tag_update_keeps_original_tags() {
+        let (_temp, lib) = disk_library();
+        let item = lib
+            .create_link("https://example.com", "标签测试", &[])
+            .unwrap();
+        let original = lib.create_tag("原标签").unwrap();
+        let added = lib.create_tag("新标签").unwrap();
+        lib.set_item_tags(&item.id, &[original.id.clone()]).unwrap();
+        assert!(lib
+            .set_item_tags(&item.id, &[added.id.clone(), "missing-tag".into()])
+            .is_err());
+        let tags = lib.get_item(&item.id).unwrap().item.tags;
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].id, original.id);
+    }
+
+    #[test]
+    fn trash_confirmation_counts_every_item_and_rechecks_before_deleting() {
+        let (_temp, lib) = disk_library();
+        let ids: Vec<String> = (0..501)
+            .map(|index| {
+                lib.create_link("https://example.com", &format!("文件 {index}"), &[])
+                    .unwrap()
+                    .id
+            })
+            .collect();
+        assert_eq!(lib.delete_items(&ids).unwrap().len(), 501);
+        assert_eq!(lib.trash_count().unwrap(), 501);
+        assert!(lib.empty_trash(500).is_err());
+        assert_eq!(lib.trash_count().unwrap(), 501);
+        lib.restore_items(&ids[..1]).unwrap();
+        assert!(lib.empty_trash(501).is_err());
+        assert_eq!(lib.trash_count().unwrap(), 500);
+        lib.empty_trash(500).unwrap();
+        assert_eq!(lib.trash_count().unwrap(), 0);
+        assert!(lib.get_item(&ids[0]).is_ok());
+        assert!(lib.restore_items(&ids[1..2]).is_err());
+        assert!(lib.purge_items(&ids[..1]).is_err());
+        assert!(lib.get_item(&ids[0]).is_ok());
+    }
+
+    #[test]
+    fn undo_only_restores_items_deleted_by_that_operation() {
+        let (_temp, lib) = disk_library();
+        let first = lib.create_link("https://example.com/1", "一", &[]).unwrap();
+        let second = lib.create_link("https://example.com/2", "二", &[]).unwrap();
+        let first_deleted = lib.delete_items(&[first.id.clone()]).unwrap();
+        let second_deleted = lib
+            .delete_items(&[first.id.clone(), second.id.clone()])
+            .unwrap();
+        assert_eq!(second_deleted, vec![second.id.clone()]);
+        lib.restore_items(&second_deleted).unwrap();
+        assert!(lib.get_item(&first.id).unwrap().item.deleted_at.is_some());
+        lib.restore_items(&first_deleted).unwrap();
+        assert_eq!(lib.trash_count().unwrap(), 0);
+    }
+
     struct TestRoot(PathBuf);
 
     impl Drop for TestRoot {
@@ -2469,19 +2527,34 @@ impl Library {
         self.get_item(&id).map(|d| d.item)
     }
 
-    pub fn delete_items(&self, ids: &[String]) -> Result<(), String> {
+    pub fn delete_items(&self, ids: &[String]) -> Result<Vec<String>, String> {
         let conn = self.db.lock().unwrap();
         self.require_items_access(&conn, ids)?;
         let placeholders = vec!["?"; ids.len()].join(",");
-        let sql = format!("UPDATE items SET deleted_at = datetime('now') WHERE id IN ({placeholders}) AND deleted_at IS NULL");
-        conn.execute(&sql, params_from_iter(ids.iter()))
+        let sql = format!("UPDATE items SET deleted_at = datetime('now') WHERE id IN ({placeholders}) AND deleted_at IS NULL RETURNING id");
+        let mut stmt = conn.prepare(&sql).map_err(map_err)?;
+        let rows = stmt
+            .query_map(params_from_iter(ids.iter()), |row| row.get(0))
             .map_err(map_err)?;
+        rows.collect::<Result<Vec<String>, _>>().map_err(map_err)
+    }
+
+    fn require_trashed_items(conn: &Connection, ids: &[String]) -> Result<(), String> {
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let count: usize = conn.query_row(
+            &format!("SELECT COUNT(*) FROM items WHERE id IN ({placeholders}) AND deleted_at IS NOT NULL"),
+            params_from_iter(ids.iter()), |row| row.get(0),
+        ).map_err(map_err)?;
+        if count != ids.iter().collect::<HashSet<_>>().len() {
+            return Err("所选文件已恢复或已永久删除，请刷新后重试".into());
+        }
         Ok(())
     }
 
     pub fn restore_items(&self, ids: &[String]) -> Result<(), String> {
         let conn = self.db.lock().unwrap();
         self.require_items_access(&conn, ids)?;
+        Self::require_trashed_items(&conn, ids)?;
         let placeholders = vec!["?"; ids.len()].join(",");
         let sql = format!("UPDATE items SET deleted_at = NULL WHERE id IN ({placeholders})");
         conn.execute(&sql, params_from_iter(ids.iter()))
@@ -2489,7 +2562,19 @@ impl Library {
         Ok(())
     }
 
-    pub fn empty_trash(&self) -> Result<(), String> {
+    pub fn trash_count(&self) -> Result<i64, String> {
+        self.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE deleted_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(map_err)
+    }
+
+    pub fn empty_trash(&self, expected_count: i64) -> Result<(), String> {
         let _files = self.files_lock.lock().unwrap();
         let mut conn = self.db.lock().unwrap();
         let all_ids = {
@@ -2503,6 +2588,9 @@ impl Library {
                 .map_err(map_err)?;
             ids
         };
+        if all_ids.len() as i64 != expected_count {
+            return Err("回收站数量已变化，请重新确认后清空".into());
+        }
         self.require_items_access(&conn, &all_ids)?;
         let rows: Vec<(String, String)> = {
             let mut stmt = conn
@@ -2541,6 +2629,7 @@ impl Library {
         let _files = self.files_lock.lock().unwrap();
         let mut conn = self.db.lock().unwrap();
         self.require_items_access(&conn, ids)?;
+        Self::require_trashed_items(&conn, ids)?;
         let placeholders = vec!["?"; ids.len()].join(",");
         let rows: Vec<(String, String)> = {
             let sql = format!(
@@ -3100,17 +3189,21 @@ impl Library {
 
     pub fn set_item_tags(&self, item_id: &str, tag_ids: &[String]) -> Result<Item, String> {
         {
-            let conn = self.db.lock().unwrap();
+            let mut conn = self.db.lock().unwrap();
             self.require_item_access(&conn, item_id)?;
-            conn.execute("DELETE FROM item_tags WHERE item_id = ?1", params![item_id])
+            let transaction = conn.transaction().map_err(map_err)?;
+            transaction
+                .execute("DELETE FROM item_tags WHERE item_id = ?1", params![item_id])
                 .map_err(map_err)?;
             for tag_id in tag_ids {
-                conn.execute(
-                    "INSERT OR IGNORE INTO item_tags (item_id, tag_id) VALUES (?1, ?2)",
-                    params![item_id, tag_id],
-                )
-                .map_err(map_err)?;
+                transaction
+                    .execute(
+                        "INSERT OR IGNORE INTO item_tags (item_id, tag_id) VALUES (?1, ?2)",
+                        params![item_id, tag_id],
+                    )
+                    .map_err(map_err)?;
             }
+            transaction.commit().map_err(map_err)?;
         }
         self.get_item(item_id).map(|d| d.item)
     }

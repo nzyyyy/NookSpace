@@ -58,6 +58,7 @@ pub fn run() {
             commands::delete_items,
             commands::restore_items,
             commands::empty_trash,
+            commands::trash_count,
             commands::purge_items,
             commands::set_favorite,
             commands::touch_item,

@@ -102,8 +102,13 @@ interface LibraryState {
   noteMode: NoteMode;
   lockSession: LockSession;
 
+  operationBusy: boolean;
+  destructiveConfirmation: { count: number; emptyTrash: boolean; resolve: (confirmed: boolean) => void } | null;
+  batchTagFailures: { id: string; title: string; reason: string }[];
+  batchTagDetailsOpen: boolean;
+  updateBatchTags: (ids: string[], tagId: string, mode: "add" | "remove") => Promise<boolean>;
   init: () => Promise<void>;
-  refresh: () => Promise<void>;
+  refresh: (strict?: boolean) => Promise<void>;
   refreshMeta: () => Promise<void>;
   setView: (view: View) => void;
   setQuery: (q: string) => void;
@@ -137,12 +142,12 @@ interface LibraryState {
   renameSavedView: (id: string, name: string) => Promise<void>;
   deleteSavedView: (id: string) => Promise<void>;
   retryPdfIndex: () => Promise<IndexResult | null>;
-  setItemTags: (itemId: string, tagIds: string[]) => Promise<void>;
+  setItemTags: (itemId: string, tagIds: string[]) => Promise<boolean>;
   toggleFavorite: (id: string) => Promise<void>;
-  deleteItems: (ids: string[]) => Promise<void>;
-  restoreItems: (ids: string[]) => Promise<void>;
-  purgeItems: (ids: string[]) => Promise<void>;
-  emptyTrash: () => Promise<void>;
+  deleteItems: (ids: string[]) => Promise<boolean>;
+  restoreItems: (ids: string[]) => Promise<boolean>;
+  purgeItems: (ids: string[]) => Promise<boolean>;
+  emptyTrash: () => Promise<boolean>;
   importPaths: (paths: string[]) => Promise<ImportResult | null>;
   addAttachments: (parentId: string, childIds: string[]) => Promise<ItemDetail | null>;
   removeAttachment: (parentId: string, childId: string) => Promise<ItemDetail | null>;
@@ -205,7 +210,77 @@ export const useLibrary = create<LibraryState>((set, get) => {
     return Boolean(item?.effectiveLocked && !get().lockSession.unlocked);
   };
 
+  const refreshAfterOperation = async (message = "操作已成功，但列表刷新失败") => {
+    try {
+      await get().refresh(true);
+    } catch (error) {
+      toast.warning(`${message}：${String(error)}`, {
+        action: { label: "重试刷新", onClick: () => { void refreshAfterOperation(message); } },
+      });
+    }
+  };
+
+  const runTrashOperation = async (kind: "delete" | "restore" | "purge" | "empty", requestedIds: string[] = []) => {
+    if (get().operationBusy) return false;
+    const ids = [...new Set(requestedIds)];
+    if (kind !== "empty" && !ids.length) return false;
+    const label = { delete: "删除", restore: "恢复", purge: "永久删除", empty: "清空回收站" }[kind];
+    set({ operationBusy: true });
+    try {
+      const count = kind === "empty" ? await ipc.trashCount() : ids.length;
+      if (!count) { toast.info("回收站是空的"); return false; }
+      if (kind === "purge" || kind === "empty") {
+        const confirmed = await new Promise<boolean>((resolve) => set({
+          destructiveConfirmation: { count, emptyTrash: kind === "empty", resolve },
+        }));
+        set({ destructiveConfirmation: null });
+        if (!confirmed) return false;
+      }
+      if (kind === "delete") await flushEdits();
+      let affected = ids;
+      if (kind === "delete") affected = await ipc.deleteItems(ids);
+      else if (kind === "restore") await ipc.restoreItems(ids);
+      else if (kind === "purge") await ipc.purgeItems(ids);
+      else await ipc.emptyTrash(count);
+
+      const { selectedId, detail, multiIds } = get();
+      const clearsDetail = kind !== "restore" && (kind === "empty"
+        ? Boolean(detail?.item.deletedAt)
+        : selectedId !== null && affected.includes(selectedId));
+      set({
+        ...(clearsDetail ? { selectedId: null, detail: null } : {}),
+        multiIds: kind === "empty" ? multiIds.filter((id) => !get().items.find((item) => item.id === id)?.deletedAt)
+          : multiIds.filter((id) => !affected.includes(id)),
+      });
+      await refreshAfterOperation();
+      if (kind === "delete" && affected.length) {
+        const deletedIds = [...affected];
+        toast.success(`已移至回收站 ${affected.length} 项`, {
+          duration: 10000,
+          action: { label: "撤销", onClick: () => {
+            if (get().operationBusy) {
+              toast.info("请等待当前操作完成，可在回收站恢复文件");
+              return;
+            }
+            void get().restoreItems(deletedIds);
+          } },
+        });
+      } else if (kind === "delete") toast.info("文件已被删除或不存在，未删除任何文件");
+      else toast.success(kind === "empty" ? `已清空回收站 ${count} 项` : `已${label} ${count} 项`);
+      return true;
+    } catch (error) {
+      toast.error(`${label}失败：${String(error)}`);
+      return false;
+    } finally {
+      set({ operationBusy: false, destructiveConfirmation: null });
+    }
+  };
+
   return {
+    operationBusy: false,
+    destructiveConfirmation: null,
+    batchTagFailures: [],
+    batchTagDetailsOpen: false,
     ready: false,
     loading: false,
     info: null,
@@ -263,9 +338,12 @@ export const useLibrary = create<LibraryState>((set, get) => {
       }).catch(() => undefined);
     },
 
-    refresh: async () => {
+    refresh: async (strict = false) => {
       const request = ++refreshRequest;
-      const result = await ipc.listItems(filters()).catch(() => null);
+      const result = await ipc.listItems(filters()).catch((error) => {
+        if (strict) throw error;
+        return null;
+      });
       if (request !== refreshRequest) return;
       if (!result) {
         set({ loading: false });
@@ -274,7 +352,10 @@ export const useLibrary = create<LibraryState>((set, get) => {
       const { selectedId, detail } = get();
       let next = detail;
       if (selectedId && !itemRequiresUnlock(selectedId)) {
-        next = await ipc.getItem(selectedId).catch(() => null) ?? detail;
+        next = await ipc.getItem(selectedId).catch((error) => {
+          if (strict) throw error;
+          return null;
+        }) ?? detail;
       }
       if (request !== refreshRequest) return;
       set({
@@ -616,11 +697,59 @@ export const useLibrary = create<LibraryState>((set, get) => {
     },
 
     setItemTags: async (itemId, tagIds) => {
-      const item = await ipc.setItemTags(itemId, tagIds).catch(() => null);
-      if (!item) return;
-      get().upsertItem(item);
-      const { detail } = get();
-      if (detail?.item.id === itemId) set({ detail: { ...detail, item } });
+      if (get().operationBusy) return false;
+      set({ operationBusy: true });
+      try {
+        const item = await ipc.setItemTags(itemId, tagIds);
+        get().upsertItem(item);
+        const { detail } = get();
+        if (detail?.item.id === itemId) set({ detail: { ...detail, item } });
+        toast.success("标签已更新");
+        await refreshAfterOperation();
+        return true;
+      } catch (error) {
+        toast.error(`更新标签失败：${String(error)}`);
+        return false;
+      } finally {
+        set({ operationBusy: false });
+      }
+    },
+
+    updateBatchTags: async (requestedIds, tagId, mode) => {
+      if (get().operationBusy) return false;
+      const ids = [...new Set(requestedIds)];
+      if (!ids.length) return false;
+      const failures: LibraryState["batchTagFailures"] = [];
+      let changed = 0;
+      let unchanged = 0;
+      set({ operationBusy: true, batchTagFailures: [], batchTagDetailsOpen: false });
+      try {
+        for (const id of ids) {
+          const title = get().items.find((item) => item.id === id)?.title ?? "所选文件";
+          try {
+            const { item } = await ipc.getItem(id);
+            const tags = item.tags.map((tag) => tag.id);
+            if (tags.includes(tagId) === (mode === "add")) { unchanged++; continue; }
+            const updated = await ipc.setItemTags(id, mode === "add" ? [...tags, tagId] : tags.filter((tag) => tag !== tagId));
+            get().upsertItem(updated);
+            const { detail } = get();
+            if (detail?.item.id === id) set({ detail: { ...detail, item: updated } });
+            changed++;
+          } catch (error) {
+            failures.push({ id, title, reason: String(error) });
+          }
+        }
+        if (failures.length) {
+          set({ batchTagFailures: failures, multiIds: failures.map(({ id }) => id), multiAnchor: failures[0].id });
+          toast.error(`标签更新：成功 ${changed} 项，无需更改 ${unchanged} 项，失败 ${failures.length} 项`, {
+            action: { label: "查看明细", onClick: () => set({ batchTagDetailsOpen: true }) },
+          });
+        } else toast.success(`标签更新：成功 ${changed} 项，无需更改 ${unchanged} 项`);
+        await refreshAfterOperation(failures.length ? "标签操作结果已记录，但列表刷新失败" : undefined);
+        return failures.length === 0;
+      } finally {
+        set({ operationBusy: false });
+      }
     },
 
     toggleFavorite: async (id) => {
@@ -636,37 +765,10 @@ export const useLibrary = create<LibraryState>((set, get) => {
       }
     },
 
-    deleteItems: async (ids) => {
-      await ipc.deleteItems(ids).catch(() => undefined);
-      const { selectedId } = get();
-      if (selectedId && ids.includes(selectedId)) {
-        set({ selectedId: null, detail: null });
-      }
-      set({ multiIds: [] });
-      await get().refresh();
-    },
-
-    restoreItems: async (ids) => {
-      await ipc.restoreItems(ids).catch(() => undefined);
-      set({ multiIds: [] });
-      await get().refresh();
-    },
-
-    purgeItems: async (ids) => {
-      await ipc.purgeItems(ids).catch(() => undefined);
-      const { selectedId } = get();
-      if (selectedId && ids.includes(selectedId)) {
-        set({ selectedId: null, detail: null });
-      }
-      set({ multiIds: [] });
-      await get().refresh();
-    },
-
-    emptyTrash: async () => {
-      await ipc.emptyTrash().catch(() => undefined);
-      set({ selectedId: null, detail: null });
-      await get().refresh();
-    },
+    deleteItems: (ids) => runTrashOperation("delete", ids),
+    restoreItems: (ids) => runTrashOperation("restore", ids),
+    purgeItems: (ids) => runTrashOperation("purge", ids),
+    emptyTrash: () => runTrashOperation("empty"),
 
     importPaths: async (paths) => {
       const { view } = get();

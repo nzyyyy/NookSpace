@@ -490,7 +490,9 @@ export function ItemList() {
     restoreItems,
     purgeItems,
     emptyTrash,
-    setItemTags,
+    updateBatchTags,
+    operationBusy,
+    batchTagFailures,
     createSavedView,
     setItemsLocked,
     lockSession,
@@ -520,7 +522,6 @@ export function ItemList() {
 
   const batchDelete = () => {
     void deleteItems(batch);
-    toast.info(`已删除 ${batch.length} 项（可在回收站恢复）`);
   };
 
   const tagPicker = useMemo(() => tags, [tags]);
@@ -557,31 +558,32 @@ export function ItemList() {
             <div className="ml-2 flex items-center gap-1">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="sm">
+                  <Button variant="ghost" size="sm" disabled={operationBusy}>
                     <Tags className="size-3.5" /> 标签
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent className="w-max min-w-32 max-w-48">
-                  <DropdownMenuLabel>添加标签</DropdownMenuLabel>
-                  {tagPicker.map((t) => (
-                    <DropdownMenuItem
-                      key={t.id}
-                      onSelect={() => {
-                        for (const id of batch) {
-                          const item = useLibrary.getState().items.find((i) => i.id === id);
-                          if (item) {
-                            const next = item.tags.some((x) => x.id === t.id)
-                              ? item.tags.filter((x) => x.id !== t.id)
-                              : [...item.tags, t];
-                            void setItemTags(id, next.map((x) => x.id));
-                          }
-                        }
-                        toast.success(`已更新 ${batch.length} 项的标签`);
-                      }}
-                    >
-                      <span className={cn("size-2 rounded-full", tagDotClass(t.color))} />
-                      {t.name}
-                    </DropdownMenuItem>
+                  {(["add", "remove"] as const).map((mode) => (
+                    <div key={mode}>
+                      <DropdownMenuLabel>{mode === "add" ? "添加标签" : "移除标签"}</DropdownMenuLabel>
+                      {tagPicker.map((t) => {
+                        const assigned = items.filter((item) => batchSet.has(item.id) && item.tags.some((tag) => tag.id === t.id)).length;
+                        return (
+                          <DropdownMenuItem
+                            key={t.id}
+                            disabled={operationBusy || (mode === "add" ? assigned === batch.length : assigned === 0)}
+                            onSelect={() => { void updateBatchTags(batch, t.id, mode); }}
+                          >
+                            <span className={cn("size-2 rounded-full", tagDotClass(t.color))} />
+                            <span className="min-w-0 truncate">{t.name}</span>
+                            <span className="ml-auto shrink-0 text-muted-foreground" aria-label={`已应用于 ${assigned}/${batch.length} 项`}>
+                              {assigned}/{batch.length} 项
+                            </span>
+                          </DropdownMenuItem>
+                        );
+                      })}
+                      {!tagPicker.length && <p className="px-2 py-1 text-xs text-muted-foreground">还没有标签</p>}
+                    </div>
                   ))}
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -613,9 +615,9 @@ export function ItemList() {
                   <Button
                     variant="outline"
                     size="sm"
+                    disabled={operationBusy}
                     onClick={() => {
                       void restoreItems(batch);
-                      toast.success("已恢复");
                     }}
                   >
                     恢复
@@ -623,16 +625,16 @@ export function ItemList() {
                   <Button
                     variant="destructive"
                     size="sm"
+                    disabled={operationBusy}
                     onClick={() => {
                       void purgeItems(batch);
-                      toast.success("已永久删除");
                     }}
                   >
                     删除
                   </Button>
                 </>
               ) : (
-                <Button variant="destructive" size="sm" onClick={batchDelete}>
+                <Button variant="destructive" size="sm" disabled={operationBusy} onClick={batchDelete}>
                   <Trash2 className="size-3.5" /> 删除
                 </Button>
               )}
@@ -655,9 +657,9 @@ export function ItemList() {
                 variant="ghost"
                 size="sm"
                 className="text-destructive"
+                disabled={operationBusy}
                 onClick={() => {
                   void emptyTrash();
-                  toast.success("回收站已清空");
                 }}
               >
                 清空回收站
@@ -693,6 +695,13 @@ export function ItemList() {
       </div>
       {listTruncated && (
         <p className="px-4 pt-1 font-mono text-[10.5px] text-muted-foreground">仅显示前 500 条，请继续细化搜索</p>
+      )}
+
+      {operationBusy && <p role="status" className="px-4 pt-1 text-xs text-muted-foreground">正在处理，请稍候…</p>}
+      {batchTagFailures.length > 0 && (
+        <Button variant="ghost" size="sm" className="self-start" onClick={() => useLibrary.setState({ batchTagDetailsOpen: true })}>
+          查看上次标签更新失败明细（{batchTagFailures.length}）
+        </Button>
       )}
 
       {/* Rows */}

@@ -18,6 +18,7 @@ import { ItemList } from "@/features/list/ItemList";
 import { DetailPane } from "@/features/detail/DetailPane";
 import { CommandPalette } from "@/features/palette/CommandPalette";
 import { QuickLook } from "@/features/quicklook/QuickLook";
+import { ItemOperationDialogs } from "@/features/list/ItemOperationDialogs";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
@@ -69,6 +70,7 @@ export default function App() {
   // Cmd+[ / Cmd+] — back / forward
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (useLibrary.getState().destructiveConfirmation || useLibrary.getState().batchTagDetailsOpen) return;
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       if (e.key === "[") {
@@ -208,6 +210,7 @@ export default function App() {
       <CommandPalette />
       <QuickLook />
       <SettingsDialog />
+      <ItemOperationDialogs />
       <Toaster position="bottom-center" />
     </TooltipProvider>
   );

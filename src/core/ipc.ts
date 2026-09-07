@@ -232,11 +232,13 @@ export const ipc = {
   createLink: (url: string, title: string, collectionIds: string[]) =>
     invoke<Item>("create_link", { url, title, collectionIds }),
 
-  deleteItems: (ids: string[]) => invoke<void>("delete_items", { ids }),
+  deleteItems: (ids: string[]) => invoke<string[]>("delete_items", { ids }),
 
   restoreItems: (ids: string[]) => invoke<void>("restore_items", { ids }),
 
-  emptyTrash: () => invoke<void>("empty_trash"),
+  trashCount: () => invoke<number>("trash_count"),
+
+  emptyTrash: (expectedCount: number) => invoke<void>("empty_trash", { expectedCount }),
 
   purgeItems: (ids: string[]) => invoke<void>("purge_items", { ids }),
 
