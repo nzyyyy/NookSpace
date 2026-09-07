@@ -40,6 +40,7 @@ export default function App() {
 
   const backStack = useRef<NavEntry[]>([]);
   const fwdStack = useRef<NavEntry[]>([]);
+  const replayingHistory = useRef(false);
   const listPane = useRef<HTMLDivElement>(null);
   const detailPane = useRef<HTMLDivElement>(null);
   const resize = useRef<{
@@ -59,7 +60,7 @@ export default function App() {
   // Record navigation history for Cmd+[ / Cmd+]
   useEffect(() => {
     return useLibrary.subscribe((s, prev) => {
-      if (s.view !== prev.view) {
+      if (!replayingHistory.current && s.view !== prev.view) {
         backStack.current.push({ view: prev.view, id: prev.selectedId });
         fwdStack.current = [];
         if (backStack.current.length > 60) backStack.current.shift();
@@ -81,7 +82,9 @@ export default function App() {
             view: useLibrary.getState().view,
             id: useLibrary.getState().selectedId,
           });
+          replayingHistory.current = true;
           useLibrary.getState().setView(entry.view);
+          replayingHistory.current = false;
           if (entry.id) void useLibrary.getState().select(entry.id);
         }
       } else if (e.key === "]") {
@@ -92,7 +95,9 @@ export default function App() {
             view: useLibrary.getState().view,
             id: useLibrary.getState().selectedId,
           });
+          replayingHistory.current = true;
           useLibrary.getState().setView(entry.view);
+          replayingHistory.current = false;
           if (entry.id) void useLibrary.getState().select(entry.id);
         }
       }

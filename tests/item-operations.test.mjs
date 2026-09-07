@@ -11,6 +11,11 @@ const source = ts.transpileModule(readFileSync(new URL("../src/stores/library.ts
 }).outputText;
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const idsOf = (values) => Array.from(values);
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+};
 
 function setup(overrides = {}) {
   const notices = [];
@@ -21,6 +26,9 @@ function setup(overrides = {}) {
     purgeItems: async () => {},
     trashCount: async () => 501,
     emptyTrash: async () => {},
+    listCollections: async () => [],
+    listTags: async () => [],
+    listSavedViews: async () => [],
     ...overrides,
   };
   const exports = {};
@@ -43,6 +51,132 @@ function setup(overrides = {}) {
   });
   return { store: exports.useLibrary, ipc, notices };
 }
+
+test("stale detail responses neither replace the current item nor stop its loading state", async () => {
+  const a = deferred();
+  const b = deferred();
+  const { store } = setup({ getItem: (id) => ({ a, b })[id].promise });
+  store.setState({ items: [
+    { id: "a", effectiveLocked: false },
+    { id: "b", effectiveLocked: false },
+  ] });
+
+  const first = store.getState().select("a");
+  const second = store.getState().select("b");
+  a.resolve({ item: { id: "a" }, attachments: [] });
+  await first;
+  assert.equal(store.getState().detail, null);
+  assert.equal(store.getState().detailLoading, true);
+  b.resolve({ item: { id: "b" }, attachments: [] });
+  await second;
+  assert.equal(store.getState().detail.item.id, "b");
+  assert.equal(store.getState().detailLoading, false);
+});
+
+test("a slower old detail response cannot overwrite a newer completed selection", async () => {
+  const a = deferred();
+  const b = deferred();
+  const { store } = setup({ getItem: (id) => ({ a, b })[id].promise });
+  store.setState({ items: [
+    { id: "a", effectiveLocked: false },
+    { id: "b", effectiveLocked: false },
+  ] });
+
+  const first = store.getState().select("a");
+  const second = store.getState().select("b");
+  b.resolve({ item: { id: "b" }, attachments: [] });
+  await second;
+  a.resolve({ item: { id: "a" }, attachments: [] });
+  await first;
+  assert.equal(store.getState().detail.item.id, "b");
+});
+
+test("changing views clears an invalidated detail loading state", () => {
+  const { store } = setup();
+  store.setState({ selectedId: "a", detailLoading: true });
+  store.getState().setView({ kind: "favorites" });
+  assert.equal(store.getState().selectedId, null);
+  assert.equal(store.getState().detailLoading, false);
+});
+
+test("refresh detail and locked-session responses cannot overwrite a newer or cleared detail", async () => {
+  const a = deferred();
+  const b = deferred();
+  const locked = deferred();
+  const { store } = setup({
+    getItem: (id) => ({ a, b, locked })[id].promise,
+    getLockSession: async () => ({ unlocked: false, remainingMs: 0 }),
+  });
+  store.setState({
+    selectedId: "a",
+    detail: { item: { id: "a" }, attachments: [] },
+    items: [
+      { id: "a", effectiveLocked: true },
+      { id: "b", effectiveLocked: false },
+    ],
+    lockSession: { unlocked: true, remainingMs: 1000 },
+  });
+
+  const refreshing = store.getState().refresh();
+  await tick();
+  const selecting = store.getState().select("b");
+  b.resolve({ item: { id: "b" }, attachments: [] });
+  await selecting;
+  a.resolve({ item: { id: "a" }, attachments: [] });
+  await refreshing;
+  assert.equal(store.getState().detail.item.id, "b");
+
+  store.setState({
+    selectedId: null,
+    detail: null,
+    items: [{ id: "locked", effectiveLocked: true }],
+    lockSession: { unlocked: true, remainingMs: 1000 },
+  });
+  store.getState().select("locked");
+  await store.getState().syncLockSession();
+  locked.resolve({ item: { id: "locked" }, attachments: [] });
+  await tick();
+  assert.equal(store.getState().detail, null);
+});
+
+test("attachment mutations only update the detail that initiated them", async () => {
+  const adding = deferred();
+  const removing = deferred();
+  const { store } = setup({
+    addAttachments: () => adding.promise,
+    removeAttachment: () => removing.promise,
+  });
+  store.setState({ selectedId: "a", detail: { item: { id: "a" }, attachments: [] } });
+  const add = store.getState().addAttachments("a", ["file"]);
+  store.setState({ selectedId: "b", detail: { item: { id: "b" }, attachments: [] } });
+  adding.resolve({ item: { id: "a" }, attachments: [{ id: "file" }] });
+  await add;
+  assert.equal(store.getState().detail.item.id, "b");
+
+  const remove = store.getState().removeAttachment("a", "file");
+  removing.resolve({ item: { id: "a" }, attachments: [] });
+  await remove;
+  assert.equal(store.getState().detail.item.id, "b");
+});
+
+test("attachment responses cannot restore locked detail", async () => {
+  const adding = deferred();
+  const { store } = setup({
+    addAttachments: () => adding.promise,
+    getLockSession: async () => ({ unlocked: false, remainingMs: 0 }),
+  });
+  store.setState({
+    selectedId: "private",
+    detail: { item: { id: "private" }, attachments: [] },
+    items: [{ id: "private", effectiveLocked: true }],
+    lockSession: { unlocked: true, remainingMs: 1000 },
+  });
+  const pending = store.getState().addAttachments("private", ["file"]);
+  await store.getState().syncLockSession();
+  adding.resolve({ item: { id: "private", effectiveLocked: true }, attachments: [] });
+  await pending;
+  assert.equal(store.getState().detail, null);
+});
 
 test("delete waits for completion, blocks duplicate calls and preserves selection on failure", async () => {
   let reject;

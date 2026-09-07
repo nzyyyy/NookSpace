@@ -22,6 +22,7 @@ import {
   convertFileSrc,
   ipc,
   type Item,
+  type ItemSummary,
   type TextFileEncoding,
   type TextFileLineEnding,
 } from "@/core/ipc";
@@ -175,15 +176,64 @@ function CollectionsEditor({ item }: { item: Item }) {
 
 function Attachments({ item }: { item: Item }) {
   const attachments = useLibrary((state) => state.detail?.attachments) ?? [];
-  const items = useLibrary((state) => state.items);
   const addAttachments = useLibrary((state) => state.addAttachments);
   const removeAttachment = useLibrary((state) => state.removeAttachment);
   const unlocked = useLibrary((state) => state.lockSession.unlocked);
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<ItemSummary[]>([]);
+  const [searching, setSearching] = useState(false);
 
-  const attachable = items.filter(
-    (i) => i.itemType === "file" && !attachments.some((a) => a.id === i.id),
-  );
+  useEffect(() => {
+    setQuery("");
+    setResults([]);
+    setSearching(false);
+  }, [item.id]);
+
+  useEffect(() => {
+    const text = query.trim();
+    if (!open || !text) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+    let active = true;
+    setSearching(true);
+    const timer = setTimeout(() => {
+      const search = (view: "all" | "privacy") => ipc.listItems({
+        view,
+        query: `type:file ${text}`,
+        sort: "updated",
+        limit: 20,
+      });
+      const requests = [search("all")];
+      if (item.isPrivate) requests.push(search("privacy"));
+      void Promise.all(requests)
+        .then((responses) => {
+          if (!active) return;
+          const items = responses.flatMap((response) => response.entries.map((entry) => entry.item));
+          setResults([...new Map(items.map((candidate) => [candidate.id, candidate])).values()]
+            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+        })
+        .catch(() => {
+          if (active) setResults([]);
+        })
+        .finally(() => {
+          if (active) setSearching(false);
+        });
+    }, 150);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [item.isPrivate, open, query]);
+
+  const attachable = results.filter(
+    (candidate) => candidate.itemType === "file"
+      && candidate.id !== item.id
+      && !(candidate.effectiveLocked && !unlocked)
+      && !attachments.some((attachment) => attachment.id === candidate.id),
+  ).slice(0, 20);
 
   return (
     <div className="flex flex-col gap-1">
@@ -192,17 +242,42 @@ function Attachments({ item }: { item: Item }) {
           <Paperclip className="size-3" /> 附件
           {attachments.length > 0 && <span className="font-mono">{attachments.length}</span>}
         </span>
-        <Popover open={open} onOpenChange={setOpen}>
+        <Popover
+          open={open}
+          onOpenChange={(next) => {
+            setOpen(next);
+            if (!next) {
+              setQuery("");
+              setResults([]);
+              setSearching(false);
+            }
+          }}
+        >
           <PopoverTrigger asChild>
             <Button variant="ghost" size="xs" className="text-muted-foreground">
               <FolderPlus className="size-3.5" /> 添加附件
             </Button>
           </PopoverTrigger>
-          <PopoverContent align="start" className="w-max min-w-40 max-w-52 p-1">
-            {attachable.length === 0 ? (
+          <PopoverContent align="start" className="w-72 p-2">
+            <div className="relative mb-2">
+              <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索库内文件…"
+                aria-label="搜索附件"
+                autoFocus
+                className="h-8 pl-7 text-[12.5px]"
+              />
+            </div>
+            {!query.trim() ? (
               <p className="px-1.5 py-1 text-[12px] text-muted-foreground">
-                先导入一些文件，再挂到这份文本上
+                输入文件名或内容搜索附件
               </p>
+            ) : searching ? (
+              <p className="px-1.5 py-1 text-[12px] text-muted-foreground">搜索中…</p>
+            ) : attachable.length === 0 ? (
+              <p className="px-1.5 py-1 text-[12px] text-muted-foreground">没有可挂载的匹配文件</p>
             ) : (
               <div className="flex max-h-56 flex-col gap-px overflow-y-auto">
                 {attachable.map((f) => (

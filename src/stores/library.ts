@@ -157,6 +157,7 @@ interface LibraryState {
 
 let queryTimer: ReturnType<typeof setTimeout> | undefined;
 let refreshRequest = 0;
+let detailRequest = 0;
 let lockTimer: ReturnType<typeof setTimeout> | undefined;
 let visibilityListenerInstalled = false;
 
@@ -191,6 +192,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
   const applyLockSession = (lockSession: LockSession) => {
     clearTimeout(lockTimer);
     const expired = get().lockSession.unlocked && !lockSession.unlocked;
+    if (expired) detailRequest++;
     set(expired
       ? {
           lockSession,
@@ -209,6 +211,9 @@ export const useLibrary = create<LibraryState>((set, get) => {
     const item = get().items.find((candidate) => candidate.id === id);
     return Boolean(item?.effectiveLocked && !get().lockSession.unlocked);
   };
+
+  const canApplyDetail = (request: number, id: string) =>
+    request === detailRequest && get().selectedId === id && !itemRequiresUnlock(id);
 
   const refreshAfterOperation = async (message = "操作已成功，但列表刷新失败") => {
     try {
@@ -248,7 +253,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
         ? Boolean(detail?.item.deletedAt)
         : selectedId !== null && affected.includes(selectedId));
       set({
-        ...(clearsDetail ? { selectedId: null, detail: null } : {}),
+        ...(clearsDetail ? { selectedId: null, detail: null, detailLoading: false } : {}),
         multiIds: kind === "empty" ? multiIds.filter((id) => !get().items.find((item) => item.id === id)?.deletedAt)
           : multiIds.filter((id) => !affected.includes(id)),
       });
@@ -351,18 +356,21 @@ export const useLibrary = create<LibraryState>((set, get) => {
       }
       const { selectedId, detail } = get();
       let next = detail;
+      let detailCurrent = false;
       if (selectedId && !itemRequiresUnlock(selectedId)) {
+        const detailRequestId = ++detailRequest;
         next = await ipc.getItem(selectedId).catch((error) => {
           if (strict) throw error;
           return null;
-        }) ?? detail;
+        }) ?? (detail?.item.id === selectedId ? detail : null);
+        detailCurrent = canApplyDetail(detailRequestId, selectedId);
       }
       if (request !== refreshRequest) return;
       set({
         items: result.entries.map((entry) => entry.item),
         snippets: Object.fromEntries(result.entries.filter((entry) => entry.snippet).map((entry) => [entry.item.id, { text: entry.snippet!, terms: entry.highlightTerms }])),
         listTruncated: result.truncated,
-        detail: next,
+        ...(detailCurrent ? { detail: next, detailLoading: false } : {}),
         loading: false,
       });
     },
@@ -377,6 +385,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
     },
 
     setView: (view) => {
+      detailRequest++;
       const saved = view.kind === "saved" ? get().savedViews.find((item) => item.id === view.id) : null;
       set({
         view,
@@ -386,6 +395,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
         multiAnchor: null,
         selectedId: null,
         detail: null,
+        detailLoading: false,
         noteMode: "read",
       });
       void get().refresh();
@@ -403,36 +413,52 @@ export const useLibrary = create<LibraryState>((set, get) => {
     },
 
     select: async (id) => {
+      const request = ++detailRequest;
       if (id === null) {
-        set({ selectedId: null, detail: null, noteMode: "read" });
+        set({ selectedId: null, detail: null, detailLoading: false, noteMode: "read" });
         return;
       }
       if (itemRequiresUnlock(id)) {
         set({ selectedId: id, multiIds: [], multiAnchor: null, detail: null, detailLoading: false, noteMode: "read" });
         return;
       }
-      set({ selectedId: id, multiIds: [], multiAnchor: null, detailLoading: true, noteMode: "read" });
+      set({
+        selectedId: id,
+        multiIds: [],
+        multiAnchor: null,
+        detail: get().detail?.item.id === id ? get().detail : null,
+        detailLoading: true,
+        noteMode: "read",
+      });
       const detail = await ipc.getItem(id).catch(() => null);
+      if (!canApplyDetail(request, id)) return;
       set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
     },
 
     toggleMulti: async (id, additive, range) => {
+      const request = ++detailRequest;
       const { multiIds, multiAnchor, items } = get();
       if (additive) {
         const next = multiIds.includes(id)
           ? multiIds.filter((x) => x !== id)
           : [...multiIds, id];
         set({ multiIds: next, multiAnchor: multiIds.length ? multiAnchor : id });
-        if (next.length === 0) set({ selectedId: null, detail: null });
+        if (next.length === 0) set({ selectedId: null, detail: null, detailLoading: false });
         else if (next.length === 1) {
-          set({ selectedId: next[0], noteMode: "read" });
+          set({
+            selectedId: next[0],
+            detail: get().detail?.item.id === next[0] ? get().detail : null,
+            detailLoading: true,
+            noteMode: "read",
+          });
           if (itemRequiresUnlock(next[0])) {
             set({ detail: null, detailLoading: false });
             return;
           }
           const detail = await ipc.getItem(next[0]).catch(() => null);
+          if (!canApplyDetail(request, next[0])) return;
           set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
-        }
+        } else set({ detailLoading: false });
         return;
       }
       if (range && multiAnchor) {
@@ -441,29 +467,43 @@ export const useLibrary = create<LibraryState>((set, get) => {
         if (idxA >= 0 && idxB >= 0) {
           const [lo, hi] = idxA < idxB ? [idxA, idxB] : [idxB, idxA];
           const ids = items.slice(lo, hi + 1).map((i) => i.id);
-          set({ multiIds: ids });
+          set({ multiIds: ids, detailLoading: false });
           return;
         }
       }
-      set({ selectedId: id, multiIds: [], multiAnchor: id, noteMode: "read" });
+      set({
+        selectedId: id,
+        multiIds: [],
+        multiAnchor: id,
+        detail: get().detail?.item.id === id ? get().detail : null,
+        detailLoading: true,
+        noteMode: "read",
+      });
       if (itemRequiresUnlock(id)) {
         set({ detail: null, detailLoading: false });
         return;
       }
       const detail = await ipc.getItem(id).catch(() => null);
+      if (!canApplyDetail(request, id)) return;
       set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
     },
 
     clearMulti: () => set({ multiIds: [], multiAnchor: null }),
 
     openItem: async (id) => {
+      const request = ++detailRequest;
       if (itemRequiresUnlock(id)) {
         set({ selectedId: id, detail: null, detailLoading: false, noteMode: "read" });
         return;
       }
-      set({ selectedId: id, detailLoading: true });
+      set({
+        selectedId: id,
+        detail: get().detail?.item.id === id ? get().detail : null,
+        detailLoading: true,
+      });
       void ipc.touchItem(id);
       const detail = await ipc.getItem(id).catch(() => null);
+      if (!canApplyDetail(request, id)) return;
       set({
         detail: detail ?? EMPTY_DETAIL,
         detailLoading: false,
@@ -527,7 +567,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
       if (!changed) return false;
       const selectedId = get().selectedId;
       if (selectedId && ids.includes(selectedId)) {
-        set({ selectedId: null, detail: null, multiIds: [], multiAnchor: null, noteMode: "read" });
+        set({ selectedId: null, detail: null, detailLoading: false, multiIds: [], multiAnchor: null, noteMode: "read" });
       }
       await get().refresh();
       return true;
@@ -606,7 +646,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
         (view.kind === "collection" && subtree.has(view.id))
         || (saved?.collectionId && subtree.has(saved.collectionId))
       ) {
-        set({ view: { kind: "all" }, query: "", selectedId: null, detail: null });
+        set({ view: { kind: "all" }, query: "", selectedId: null, detail: null, detailLoading: false });
       }
       await get().refreshMeta();
       await get().refresh();
@@ -649,7 +689,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
       const { savedViews, view } = get();
       const saved = view.kind === "saved" ? savedViews.find((item) => item.id === view.id) : null;
       if ((view.kind === "tag" && view.id === id) || saved?.tagId === id) {
-        set({ view: { kind: "all" }, query: "", selectedId: null, detail: null });
+        set({ view: { kind: "all" }, query: "", selectedId: null, detail: null, detailLoading: false });
       }
       await get().refreshMeta();
       await get().refresh();
@@ -683,7 +723,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
       const active = currentView.kind === "saved" && currentView.id === id;
       set({
         savedViews: get().savedViews.filter((item) => item.id !== id),
-        ...(active ? { view: { kind: "all" } as View, query: "", selectedId: null, detail: null } : {}),
+        ...(active ? { view: { kind: "all" } as View, query: "", selectedId: null, detail: null, detailLoading: false } : {}),
       });
       if (active) await get().refresh();
     },
@@ -781,13 +821,17 @@ export const useLibrary = create<LibraryState>((set, get) => {
 
     addAttachments: async (parentId, childIds) => {
       const d = await ipc.addAttachments(parentId, childIds).catch(() => null);
-      if (d) set({ detail: d });
+      if (d && get().selectedId === parentId && (get().lockSession.unlocked || !d.item.effectiveLocked)) {
+        set({ detail: d });
+      }
       return d;
     },
 
     removeAttachment: async (parentId, childId) => {
       const d = await ipc.removeAttachment(parentId, childId).catch(() => null);
-      if (d) set({ detail: d });
+      if (d && get().selectedId === parentId && (get().lockSession.unlocked || !d.item.effectiveLocked)) {
+        set({ detail: d });
+      }
       return d;
     },
 
