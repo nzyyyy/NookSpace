@@ -6,7 +6,6 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { clampPaneWidth } from "@/lib/pane-width";
 import { cn } from "@/lib/utils";
 import { useLibrary, type View } from "@/stores/library";
@@ -15,6 +14,7 @@ import { useUi } from "@/stores/ui";
 import { useShortcuts } from "@/hooks/useShortcuts";
 import { Sidebar } from "@/features/sidebar/Sidebar";
 import { ItemList } from "@/features/list/ItemList";
+import { FileDropFeedback } from "@/features/list/FileDropFeedback";
 import { DetailPane } from "@/features/detail/DetailPane";
 import { CommandPalette } from "@/features/palette/CommandPalette";
 import { QuickLook } from "@/features/quicklook/QuickLook";
@@ -22,7 +22,6 @@ import { ItemOperationDialogs } from "@/features/list/ItemOperationDialogs";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
-import { toast } from "sonner";
 
 interface NavEntry {
   view: View;
@@ -106,31 +105,6 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Finder drag & drop — copy dropped files/folders into the Library
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void getCurrentWindow()
-      .onDragDropEvent(async (event) => {
-        if (disposed) return;
-        if (event.payload.type === "drop" && event.payload.paths.length > 0) {
-          const result = await useLibrary.getState().importPaths(event.payload.paths);
-          if (result) {
-            toast.success(
-              `已导入 ${result.imported.length} 个文件${result.skipped.length ? `，跳过 ${result.skipped.length} 个` : ""}`,
-            );
-          }
-        }
-      })
-      .then((fn) => {
-        unlisten = fn;
-      });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
   const listMinimumWidth = () => {
     const toolbar = listPane.current?.querySelector<HTMLElement>("[data-pane-toolbar]");
     const spacer = toolbar?.querySelector<HTMLElement>("[data-pane-spacer]");
@@ -189,10 +163,11 @@ export default function App() {
         <Sidebar />
         <div
           ref={listPane}
-          className={cn("flex", listCollapsed && "hidden")}
+          className={cn("relative flex", listCollapsed && "hidden")}
           style={listCollapsed ? undefined : { flex: `0 1 ${listWidth}px`, minWidth: LIST_MIN_WIDTH }}
         >
           <ItemList />
+          <FileDropFeedback paneRef={listPane} />
         </div>
         {!listCollapsed && (
           <div
