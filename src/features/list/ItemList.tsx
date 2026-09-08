@@ -501,12 +501,7 @@ function CreateMenu() {
                 title: "导入文件",
               });
               if (picked && picked.length > 0) {
-                const r = await importPaths(picked);
-                if (r) {
-                  toast.success(
-                    `已导入 ${r.imported.length} 个文件${r.skipped.length ? `，跳过 ${r.skipped.length} 个` : ""}`,
-                  );
-                }
+                await importPaths(picked);
               }
             })();
           }}

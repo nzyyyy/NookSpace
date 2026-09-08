@@ -109,6 +109,24 @@ export interface ImportResult {
   skipped: ImportSkip[];
 }
 
+export type LinkedSourceState = "available" | "missing" | "error";
+
+export interface LinkedSourceStatus {
+  id: string;
+  state: LinkedSourceState;
+}
+
+export interface LinkedSyncResult {
+  statuses: LinkedSourceStatus[];
+  updatedIds: string[];
+  watching: boolean;
+}
+
+export type RelinkStrategy = "useSource" | "keepLibrary";
+export type RelinkResult =
+  | { status: "linked"; detail: ItemDetail }
+  | { status: "needsChoice" };
+
 export interface LibraryInfo {
   root: string;
   dbPath: string;
@@ -288,8 +306,16 @@ export const ipc = {
   removeAttachment: (parentId: string, childId: string) =>
     invoke<ItemDetail>("remove_attachment", { parentId, childId }),
 
-  importFiles: (paths: string[], collectionId?: string | null) =>
-    invoke<ImportResult>("import_files", { paths, collectionId }),
+  importFiles: (paths: string[], collectionId: string | null, linkSource: boolean) =>
+    invoke<ImportResult>("import_files", { paths, collectionId, linkSource }),
+
+  syncLinkedSources: (ids?: string[] | null) =>
+    invoke<LinkedSyncResult>("sync_linked_sources", { ids: ids ?? null }),
+
+  relinkSource: (id: string, sourcePath: string, strategy?: RelinkStrategy | null) =>
+    invoke<RelinkResult>("relink_source", { id, sourcePath, strategy: strategy ?? null }),
+
+  detachSource: (id: string) => invoke<ItemDetail>("detach_source", { id }),
 
   openWithDefault: (id: string) =>
     invoke<void>("open_with_default", { id }),

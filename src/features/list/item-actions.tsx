@@ -46,7 +46,9 @@ async function exportItem(item: Item | ItemSummary) {
 export function useItemActions(item: Item | ItemSummary): ItemAction[] {
   const operationBusy = useLibrary((state) => state.operationBusy);
   const unlocked = useLibrary((state) => state.lockSession.unlocked);
+  const linkedSource = useLibrary((state) => state.linkedSources[item.id]);
   const protectedLocked = item.effectiveLocked && !unlocked;
+  const sourceUnavailable = linkedSource === "missing" || linkedSource === "error";
   const actions: ItemAction[] = [];
   const addSeparator = () => actions.push({ kind: "separator", key: `separator-${actions.length}` });
   const add = (action: Omit<Extract<ItemAction, { kind: "item" }>, "kind">) =>
@@ -75,7 +77,7 @@ export function useItemActions(item: Item | ItemSummary): ItemAction[] {
       key: "open",
       label: "用默认应用打开",
       icon: <ExternalLink className="size-3.5" />,
-      disabled: protectedLocked,
+      disabled: protectedLocked || sourceUnavailable,
       run: () => ipc.openWithDefault(item.id),
     });
     if (!isMediaFile(item.mime, item.storedPath || item.title)) {

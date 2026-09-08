@@ -37,6 +37,10 @@ export function useShortcuts() {
           && isSwitchableText(lib.detail.item.storedPath || lib.detail.item.title)
           && !lib.detail.item.deletedAt) {
           e.preventDefault();
+          if (lib.noteMode === "edit") {
+            const waits: Promise<void>[] = [];
+            window.dispatchEvent(new CustomEvent("nookspace:flush-edits", { detail: waits }));
+          }
           lib.setNoteMode(lib.noteMode === "read" ? "edit" : "read");
         }
         return;
@@ -60,12 +64,7 @@ export function useShortcuts() {
             title: "导入文件",
           });
           if (picked && picked.length > 0) {
-            const r = await useLibrary.getState().importPaths(picked);
-            if (r) {
-              toast.success(
-                `已导入 ${r.imported.length} 个文件${r.skipped.length ? `，跳过 ${r.skipped.length} 个` : ""}`,
-              );
-            }
+            await useLibrary.getState().importPaths(picked);
           }
         })();
         return;

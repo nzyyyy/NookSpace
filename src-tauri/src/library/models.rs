@@ -198,6 +198,28 @@ pub struct ImportResult {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LinkedSourceStatus {
+    pub id: String,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedSyncResult {
+    pub statuses: Vec<LinkedSourceStatus>,
+    pub updated_ids: Vec<String>,
+    pub watching: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum RelinkSourceResult {
+    Linked { detail: ItemDetail },
+    NeedsChoice,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TextFileDocument {
     pub content: String,
     pub version: String,

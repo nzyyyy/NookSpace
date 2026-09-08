@@ -29,6 +29,7 @@ function setup(overrides = {}) {
     listCollections: async () => [],
     listTags: async () => [],
     listSavedViews: async () => [],
+    syncLinkedSources: async () => ({ statuses: [], updatedIds: [], watching: true }),
     ...overrides,
   };
   const exports = {};
@@ -51,6 +52,29 @@ function setup(overrides = {}) {
   });
   return { store: exports.useLibrary, ipc, notices };
 }
+
+test("imports wait for confirmation and preserve the selected destination and link choice", async () => {
+  const calls = [];
+  const { store } = setup({
+    importFiles: async (...args) => {
+      calls.push(args);
+      return { imported: [{ item: { id: "file" } }], skipped: [] };
+    },
+    syncLinkedSources: async () => ({ statuses: [], updatedIds: [], watching: true }),
+  });
+  store.setState({ view: { kind: "collection", id: "books" } });
+
+  const cancelled = store.getState().importPaths(["/tmp/cancel.txt"]);
+  store.getState().importConfirmation.resolve(null);
+  assert.equal(await cancelled, null);
+  assert.equal(calls.length, 0);
+
+  const linked = store.getState().importPaths(["/tmp/linked.txt"]);
+  store.setState({ view: { kind: "all" } });
+  store.getState().importConfirmation.resolve(true);
+  await linked;
+  assert.deepEqual(calls[0], [["/tmp/linked.txt"], "books", true]);
+});
 
 test("stale detail responses neither replace the current item nor stop its loading state", async () => {
   const a = deferred();

@@ -33,6 +33,7 @@ pub struct Library {
     app_data: PathBuf,
     files_lock: Arc<Mutex<()>>,
     unlocked_until: Arc<Mutex<Option<Instant>>>,
+    source_watcher: Option<Arc<Mutex<import::SourceWatcher>>>,
 }
 
 #[cfg(test)]
@@ -117,6 +118,7 @@ mod tests {
             app_data: PathBuf::new(),
             files_lock: Arc::new(Mutex::new(())),
             unlocked_until: Arc::new(Mutex::new(None)),
+            source_watcher: None,
         }
     }
 
@@ -137,6 +139,7 @@ mod tests {
             app_data,
             files_lock: Arc::new(Mutex::new(())),
             unlocked_until: Arc::new(Mutex::new(None)),
+            source_watcher: None,
         };
         lib.migrate_notes_to_files().unwrap();
         (TestRoot(base), lib)
@@ -1148,7 +1151,7 @@ mod tests {
         let source = temp.0.join("source.bin");
         fs::write(&source, b"verified file").unwrap();
         let file = lib
-            .import_files(&[source.to_string_lossy().to_string()], None)
+            .import_files(&[source.to_string_lossy().to_string()], None, false)
             .unwrap()
             .imported
             .remove(0)
@@ -1257,7 +1260,7 @@ mod tests {
         let original = [b"\xef\xbb\xbf".as_slice(), b"one\r\ntwo\r\n"].concat();
         fs::write(&source, &original).unwrap();
         let imported = lib
-            .import_files(&[source.to_string_lossy().to_string()], None)
+            .import_files(&[source.to_string_lossy().to_string()], None, false)
             .unwrap()
             .imported
             .remove(0)
@@ -1338,13 +1341,200 @@ mod tests {
     }
 
     #[test]
+    fn linked_files_sync_both_ways_and_keep_the_safe_copy() {
+        let (temp, lib) = disk_library();
+        let source = temp.0.join("linked.txt");
+        fs::write(&source, b"one").unwrap();
+        let item = lib
+            .import_files(&[source.to_string_lossy().to_string()], None, true)
+            .unwrap()
+            .imported
+            .remove(0)
+            .item;
+        let stored = lib.safe_stored_path(&item.stored_path).unwrap();
+        assert_eq!(
+            lib.import_files(&[source.to_string_lossy().to_string()], None, true)
+                .unwrap()
+                .skipped
+                .len(),
+            1
+        );
+
+        fs::write(&source, b"two").unwrap();
+        lib.db.lock().unwrap().execute_batch(&format!(
+            "CREATE TRIGGER fail_link_sync BEFORE UPDATE OF size ON items WHEN OLD.id = '{}' BEGIN SELECT RAISE(ABORT, 'fail'); END;",
+            item.id
+        )).unwrap();
+        assert_eq!(
+            lib.sync_linked_sources(None).unwrap().statuses[0].state,
+            "error"
+        );
+        assert_eq!(fs::read(&stored).unwrap(), b"one");
+        lib.db
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_link_sync")
+            .unwrap();
+        let synced = lib.sync_linked_sources(None).unwrap();
+        assert_eq!(synced.updated_ids, [item.id.clone()]);
+        assert_eq!(fs::read(&stored).unwrap(), b"two");
+
+        let document = lib.read_text_file(&item.id).unwrap();
+        let saved = lib
+            .write_text_file(
+                &item.id,
+                "three",
+                &document.version,
+                &document.encoding,
+                &document.line_ending,
+            )
+            .unwrap();
+        assert!(matches!(saved, TextFileWriteResult::Saved { .. }));
+        assert_eq!(fs::read(&source).unwrap(), b"three");
+        assert_eq!(fs::read(&stored).unwrap(), b"three");
+
+        fs::write(&source, b"external").unwrap();
+        let conflict = lib
+            .write_text_file(
+                &item.id,
+                "local",
+                match &saved {
+                    TextFileWriteResult::Saved { version, .. } => version,
+                    _ => unreachable!(),
+                },
+                "utf8",
+                "lf",
+            )
+            .unwrap();
+        assert!(matches!(conflict, TextFileWriteResult::Conflict { .. }));
+        assert_eq!(fs::read(&stored).unwrap(), b"three");
+        assert_eq!(fs::read(&source).unwrap(), b"external");
+        let TextFileWriteResult::Conflict {
+            version: conflict_version,
+        } = conflict
+        else {
+            unreachable!()
+        };
+        let overwritten = lib
+            .write_text_file(&item.id, "local", &conflict_version, "utf8", "lf")
+            .unwrap();
+        assert!(matches!(overwritten, TextFileWriteResult::Saved { .. }));
+        assert_eq!(fs::read(&source).unwrap(), b"local");
+        assert_eq!(fs::read(&stored).unwrap(), b"local");
+
+        fs::remove_file(&source).unwrap();
+        let missing = lib.sync_linked_sources(None).unwrap();
+        assert_eq!(missing.statuses[0].state, "missing");
+        assert_eq!(lib.read_text_file(&item.id).unwrap().content, "local");
+    }
+
+    #[test]
+    fn linked_import_rejects_symlinks_and_library_paths() {
+        let (temp, lib) = disk_library();
+        let real = temp.0.join("real.txt");
+        fs::write(&real, b"ok").unwrap();
+        let link = temp.0.join("link.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let skipped = lib
+            .import_files(&[link.to_string_lossy().to_string()], None, true)
+            .unwrap();
+        assert!(skipped.imported.is_empty());
+        assert_eq!(skipped.skipped[0].reason, "只能链接普通文件");
+
+        let imported = lib
+            .import_files(&[real.to_string_lossy().to_string()], None, false)
+            .unwrap()
+            .imported
+            .remove(0)
+            .item;
+        let stored = lib.safe_stored_path(&imported.stored_path).unwrap();
+        let inside = lib
+            .import_files(&[stored.to_string_lossy().to_string()], None, true)
+            .unwrap();
+        assert!(inside.imported.is_empty());
+        assert_eq!(inside.skipped[0].reason, "不能链接资料库内部的文件");
+    }
+
+    #[test]
+    fn purging_a_linked_item_does_not_delete_the_source() {
+        let (temp, lib) = disk_library();
+        let source = temp.0.join("keep.txt");
+        fs::write(&source, b"keep").unwrap();
+        let item = lib
+            .import_files(&[source.to_string_lossy().to_string()], None, true)
+            .unwrap()
+            .imported
+            .remove(0)
+            .item;
+        lib.delete_items(std::slice::from_ref(&item.id)).unwrap();
+        lib.purge_items(std::slice::from_ref(&item.id)).unwrap();
+        assert_eq!(fs::read(&source).unwrap(), b"keep");
+        assert!(lib.get_item(&item.id).is_err());
+    }
+
+    #[test]
+    fn relink_requires_a_choice_and_detach_stops_syncing() {
+        let (temp, lib) = disk_library();
+        let source = temp.0.join("source.txt");
+        let replacement = temp.0.join("replacement.txt");
+        fs::write(&source, b"library copy").unwrap();
+        fs::write(&replacement, b"replacement").unwrap();
+        let item = lib
+            .import_files(&[source.to_string_lossy().to_string()], None, true)
+            .unwrap()
+            .imported
+            .remove(0)
+            .item;
+        let stored = lib.safe_stored_path(&item.stored_path).unwrap();
+
+        assert!(matches!(
+            lib.relink_source(&item.id, replacement.to_str().unwrap(), None)
+                .unwrap(),
+            RelinkSourceResult::NeedsChoice
+        ));
+        assert_eq!(fs::read(&stored).unwrap(), b"library copy");
+        assert!(matches!(
+            lib.relink_source(&item.id, replacement.to_str().unwrap(), Some("useSource"))
+                .unwrap(),
+            RelinkSourceResult::Linked { .. }
+        ));
+        assert_eq!(fs::read(&stored).unwrap(), b"replacement");
+
+        let keep_target = temp.0.join("keep-target.txt");
+        fs::write(&keep_target, b"discard this").unwrap();
+        assert!(matches!(
+            lib.relink_source(&item.id, keep_target.to_str().unwrap(), None)
+                .unwrap(),
+            RelinkSourceResult::NeedsChoice
+        ));
+        lib.relink_source(&item.id, keep_target.to_str().unwrap(), Some("keepLibrary"))
+            .unwrap();
+        assert_eq!(fs::read(&keep_target).unwrap(), b"replacement");
+
+        let before_rename = lib.get_item(&item.id).unwrap().item.stored_path;
+        lib.rename_file(&item.id, "资料库名称", None).unwrap();
+        assert_eq!(
+            lib.get_item(&item.id).unwrap().item.stored_path,
+            before_rename
+        );
+        assert!(keep_target.is_file());
+
+        lib.detach_source(&item.id).unwrap();
+        fs::write(&keep_target, b"ignored").unwrap();
+        assert!(lib.sync_linked_sources(None).unwrap().statuses.is_empty());
+        assert_eq!(fs::read(&stored).unwrap(), b"replacement");
+        lib.delete_items(std::slice::from_ref(&item.id)).unwrap();
+        assert_eq!(fs::read(&keep_target).unwrap(), b"ignored");
+    }
+
+    #[test]
     fn html_files_are_read_only() {
         let (temp, lib) = disk_library();
         let source = temp.0.join("page.HTM");
         let original = b"<!doctype html><h1>read only</h1>";
         fs::write(&source, original).unwrap();
         let item = lib
-            .import_files(&[source.to_string_lossy().to_string()], None)
+            .import_files(&[source.to_string_lossy().to_string()], None, false)
             .unwrap()
             .imported
             .remove(0)
@@ -1913,8 +2103,12 @@ impl Library {
             app_data,
             files_lock: Arc::new(Mutex::new(())),
             unlocked_until: Arc::new(Mutex::new(None)),
+            source_watcher: import::SourceWatcher::new(app.clone())
+                .ok()
+                .map(|watcher| Arc::new(Mutex::new(watcher))),
         };
         lib.migrate_notes_to_files()?;
+        let _ = lib.refresh_source_watches();
         Ok(lib)
     }
 
@@ -2448,6 +2642,23 @@ impl Library {
             return Err("回收站中的文件不可改名".into());
         }
         let stem = native::sanitize_stem(stem)?;
+        if let Some(source) = import::linked_source(self, id)? {
+            if !source.is_file() {
+                return Err("源文件已失联，请重新选择或转为内部管理".into());
+            }
+            if format.is_some() {
+                return Err("链接文件不能切换格式".into());
+            }
+            self.db
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE items SET title = ?1, updated_at = datetime('now') WHERE id = ?2 AND deleted_at IS NULL",
+                    params![stem, id],
+                )
+                .map_err(map_err)?;
+            return self.get_item(id).map(|detail| detail.item);
+        }
         let current_ext = native::file_extension(&item.stored_path);
         let new_ext = if let Some(format) = format {
             let canonical = native::canonical_format(format).ok_or("不支持的格式")?;
@@ -2536,7 +2747,11 @@ impl Library {
         let rows = stmt
             .query_map(params_from_iter(ids.iter()), |row| row.get(0))
             .map_err(map_err)?;
-        rows.collect::<Result<Vec<String>, _>>().map_err(map_err)
+        let deleted = rows.collect::<Result<Vec<String>, _>>().map_err(map_err)?;
+        drop(stmt);
+        drop(conn);
+        let _ = self.refresh_source_watches();
+        Ok(deleted)
     }
 
     fn require_trashed_items(conn: &Connection, ids: &[String]) -> Result<(), String> {
@@ -2559,6 +2774,9 @@ impl Library {
         let sql = format!("UPDATE items SET deleted_at = NULL WHERE id IN ({placeholders})");
         conn.execute(&sql, params_from_iter(ids.iter()))
             .map_err(map_err)?;
+        drop(conn);
+        let _ = self.refresh_source_watches();
+        let _ = self.sync_linked_sources(Some(ids));
         Ok(())
     }
 
@@ -2618,6 +2836,8 @@ impl Library {
         for id in &ids {
             let _ = std::fs::remove_file(self.thumb_dir().join(format!("{id}.png")));
         }
+        drop(conn);
+        let _ = self.refresh_source_watches();
         Ok(())
     }
 
@@ -2662,6 +2882,8 @@ impl Library {
         for id in file_ids {
             let _ = std::fs::remove_file(self.thumb_dir().join(format!("{id}.png")));
         }
+        drop(conn);
+        let _ = self.refresh_source_watches();
         Ok(())
     }
 
@@ -3277,13 +3499,42 @@ impl Library {
         &self,
         paths: &[String],
         collection_id: Option<&str>,
+        link_source: bool,
     ) -> Result<ImportResult, String> {
         if let Some(collection_id) = collection_id {
             let conn = self.db.lock().unwrap();
             self.require_collection_access(&conn, collection_id)?;
         }
         let _files = self.files_lock.lock().unwrap();
-        import::import_files(self, paths, collection_id)
+        import::import_files(self, paths, collection_id, link_source)
+    }
+
+    pub fn sync_linked_sources(&self, ids: Option<&[String]>) -> Result<LinkedSyncResult, String> {
+        import::sync_linked_sources(self, ids)
+    }
+
+    pub fn relink_source(
+        &self,
+        id: &str,
+        source_path: &str,
+        strategy: Option<&str>,
+    ) -> Result<RelinkSourceResult, String> {
+        import::relink_source(self, id, source_path, strategy)
+    }
+
+    pub fn detach_source(&self, id: &str) -> Result<ItemDetail, String> {
+        import::detach_source(self, id)
+    }
+
+    fn refresh_source_watches(&self) -> Result<(), String> {
+        let Some(watcher) = &self.source_watcher else {
+            return Ok(());
+        };
+        let sources = import::linked_rows(self, None)?
+            .into_iter()
+            .map(|(_, _, source, _, _)| PathBuf::from(source))
+            .collect();
+        watcher.lock().unwrap().reset(sources)
     }
 
     pub fn open_with_default(&self, id: &str) -> Result<(), String> {
@@ -3291,14 +3542,20 @@ impl Library {
     }
 
     pub fn quicklook(&self, id: &str) -> Result<(), String> {
+        let ids = [id.to_string()];
+        let _ = self.sync_linked_sources(Some(&ids));
         native::quicklook(self, id)
     }
 
     pub fn generate_thumbnail(&self, id: &str) -> Result<Option<String>, String> {
+        let ids = [id.to_string()];
+        let _ = self.sync_linked_sources(Some(&ids));
         native::generate_thumbnail(self, id)
     }
 
     pub fn read_text_file(&self, id: &str) -> Result<TextFileDocument, String> {
+        let ids = [id.to_string()];
+        let _ = self.sync_linked_sources(Some(&ids));
         let _files = self.files_lock.lock().unwrap();
         native::read_text_file(self, id)
     }
@@ -3317,6 +3574,8 @@ impl Library {
 
     /// Absolute path of a File item's stored file (for in-window preview).
     pub fn file_abs_path(&self, id: &str) -> Result<Option<String>, String> {
+        let ids = [id.to_string()];
+        let _ = self.sync_linked_sources(Some(&ids));
         let conn = self.db.lock().unwrap();
         self.require_item_access(&conn, id)?;
         let stored: Option<(String, String)> = conn

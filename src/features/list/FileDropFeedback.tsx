@@ -58,18 +58,15 @@ export function FileDropFeedback({ paneRef }: { paneRef: RefObject<HTMLDivElemen
       }
       show(overList && payload.paths.length > 0 ? { phase: "importing", label: "正在导入" } : null);
       if (payload.paths.length === 0) return;
-      const result = await useLibrary.getState().importPaths(payload.paths).catch(() => null);
+      const resultPromise = useLibrary.getState().importPaths(payload.paths).catch(() => null);
+      if (useLibrary.getState().importConfirmation) show(null);
+      const result = await resultPromise;
       if (disposed) return;
-      const count = result?.imported.length ?? 0;
-      if (count > 0) {
-        toast.success(`已导入 ${count} 个文件${result!.skipped.length ? `，跳过 ${result!.skipped.length} 个` : ""}`);
-      } else if (result?.skipped.length) {
-        toast.warning(`未导入文件，跳过 ${result.skipped.length} 个`, { description: result.skipped[0].reason });
-      } else if (result) {
-        toast.info("没有可导入的文件");
-      } else {
-        toast.error("导入失败，请重试");
+      if (!result) {
+        show(null);
+        return;
       }
+      const count = result?.imported.length ?? 0;
       // A previous import must not replace feedback for a newer drag or view.
       if (request !== revision) return;
       show(overList && count > 0 ? { phase: "success", label: `已导入 ${count} 个文件` } : null);

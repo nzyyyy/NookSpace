@@ -9,6 +9,9 @@ import {
   type ItemSummary,
   type LibraryInfo,
   type LockSession,
+  type LinkedSourceState,
+  type RelinkResult,
+  type RelinkStrategy,
   type SavedView,
   type SearchIndexStatus,
   type Tag,
@@ -62,7 +65,7 @@ const summaryOf = (item: Item): ItemSummary => ({
   id: item.id,
   itemType: item.itemType,
   title: item.title,
-  contentPreview: item.content.slice(0, 240),
+  contentPreview: (item.content ?? "").slice(0, 240),
   url: item.url,
   storedPath: item.storedPath,
   size: item.size,
@@ -103,6 +106,8 @@ interface LibraryState {
   lockSession: LockSession;
 
   operationBusy: boolean;
+  importConfirmation: { paths: string[]; resolve: (linkSource: boolean | null) => void } | null;
+  linkedSources: Record<string, LinkedSourceState>;
   destructiveConfirmation: { count: number; emptyTrash: boolean; resolve: (confirmed: boolean) => void } | null;
   batchTagFailures: { id: string; title: string; reason: string }[];
   batchTagDetailsOpen: boolean;
@@ -149,6 +154,9 @@ interface LibraryState {
   purgeItems: (ids: string[]) => Promise<boolean>;
   emptyTrash: () => Promise<boolean>;
   importPaths: (paths: string[]) => Promise<ImportResult | null>;
+  syncLinkedSources: (ids?: string[] | null) => Promise<void>;
+  relinkSource: (id: string, sourcePath: string, strategy?: RelinkStrategy | null) => Promise<RelinkResult | null>;
+  detachSource: (id: string) => Promise<boolean>;
   addAttachments: (parentId: string, childIds: string[]) => Promise<ItemDetail | null>;
   removeAttachment: (parentId: string, childId: string) => Promise<ItemDetail | null>;
   applyDetail: (detail: ItemDetail) => void;
@@ -160,6 +168,7 @@ let refreshRequest = 0;
 let detailRequest = 0;
 let lockTimer: ReturnType<typeof setTimeout> | undefined;
 let visibilityListenerInstalled = false;
+let watcherWarningShown = false;
 
 const flushEdits = async () => {
   const waits: Promise<void>[] = [];
@@ -283,6 +292,8 @@ export const useLibrary = create<LibraryState>((set, get) => {
 
   return {
     operationBusy: false,
+    importConfirmation: null,
+    linkedSources: {},
     destructiveConfirmation: null,
     batchTagFailures: [],
     batchTagDetailsOpen: false,
@@ -336,6 +347,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
           if (document.visibilityState === "visible") void useLibrary.getState().syncLockSession();
         });
       }
+      void get().syncLinkedSources();
       void ipc.indexPendingPdfs(false).then(async (indexed) => {
         const status = await ipc.getSearchIndexStatus().catch(() => null);
         set({ searchIndex: status });
@@ -432,9 +444,11 @@ export const useLibrary = create<LibraryState>((set, get) => {
         detailLoading: true,
         noteMode: "read",
       });
+      await get().syncLinkedSources([id]);
       const detail = await ipc.getItem(id).catch(() => null);
       if (!canApplyDetail(request, id)) return;
       set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
+      if (detail) get().upsertItem(detail.item);
     },
 
     toggleMulti: async (id, additive, range) => {
@@ -457,9 +471,11 @@ export const useLibrary = create<LibraryState>((set, get) => {
             set({ detail: null, detailLoading: false });
             return;
           }
+          await get().syncLinkedSources([next[0]]);
           const detail = await ipc.getItem(next[0]).catch(() => null);
           if (!canApplyDetail(request, next[0])) return;
           set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
+          if (detail) get().upsertItem(detail.item);
         } else set({ detailLoading: false });
         return;
       }
@@ -485,9 +501,11 @@ export const useLibrary = create<LibraryState>((set, get) => {
         set({ detail: null, detailLoading: false });
         return;
       }
+      await get().syncLinkedSources([id]);
       const detail = await ipc.getItem(id).catch(() => null);
       if (!canApplyDetail(request, id)) return;
       set({ detail: detail ?? EMPTY_DETAIL, detailLoading: false });
+      if (detail) get().upsertItem(detail.item);
     },
 
     clearMulti: () => set({ multiIds: [], multiAnchor: null }),
@@ -503,6 +521,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
         detail: get().detail?.item.id === id ? get().detail : null,
         detailLoading: true,
       });
+      await get().syncLinkedSources([id]);
       void ipc.touchItem(id);
       const detail = await ipc.getItem(id).catch(() => null);
       if (!canApplyDetail(request, id)) return;
@@ -514,6 +533,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
           ? "edit"
           : "read",
       });
+      if (detail) get().upsertItem(detail.item);
     },
 
     setNoteMode: (noteMode) => set({ noteMode }),
@@ -814,11 +834,75 @@ export const useLibrary = create<LibraryState>((set, get) => {
 
     importPaths: async (paths) => {
       const { view } = get();
-      const result = await ipc
-        .importFiles(paths, currentCollectionId(view))
-        .catch(() => null);
-      await get().refresh();
+      if (get().importConfirmation) {
+        toast.info("请先处理当前导入确认");
+        return null;
+      }
+      const linkSource = await new Promise<boolean | null>((resolve) => {
+        set({ importConfirmation: { paths, resolve } });
+      });
+      set({ importConfirmation: null });
+      if (linkSource === null) return null;
+      try {
+        const result = await ipc.importFiles(paths, currentCollectionId(view), linkSource);
+        await get().refresh();
+        if (linkSource) await get().syncLinkedSources();
+        const count = result.imported.length;
+        if (count > 0) {
+          toast.success(`已导入 ${count} 个文件${result.skipped.length ? `，跳过 ${result.skipped.length} 个` : ""}`);
+        } else if (result.skipped.length) {
+          toast.warning(`未导入文件，跳过 ${result.skipped.length} 个`, { description: result.skipped[0].reason });
+        } else {
+          toast.info("没有可导入的文件");
+        }
+        return result;
+      } catch (error) {
+        toast.error(`导入失败：${String(error)}`);
+        return null;
+      }
+    },
+
+    syncLinkedSources: async (ids = null) => {
+      const result = await ipc.syncLinkedSources(ids).catch(() => null);
+      if (!result) return;
+      const linkedSources = ids ? { ...get().linkedSources } : {};
+      for (const status of result.statuses) linkedSources[status.id] = status.state;
+      set({ linkedSources });
+      if (!result.watching && result.statuses.length > 0 && !watcherWarningShown) {
+        watcherWarningShown = true;
+        toast.warning("实时文件监听不可用，将在打开文件时检查同步");
+      }
+      if (result.updatedIds.length > 0) {
+        if (!ids) await get().refresh();
+        window.dispatchEvent(new CustomEvent("nookspace:linked-source-updated", { detail: result.updatedIds }));
+      }
+    },
+
+    relinkSource: async (id, sourcePath, strategy = null) => {
+      const result = await ipc.relinkSource(id, sourcePath, strategy).catch((error) => {
+        toast.error(`重新选择源文件失败：${String(error)}`);
+        return null;
+      });
+      if (result?.status === "linked") {
+        get().applyDetail(result.detail);
+        set({ linkedSources: { ...get().linkedSources, [id]: "available" } });
+        await get().refresh();
+        window.dispatchEvent(new CustomEvent("nookspace:linked-source-updated", { detail: [id] }));
+      }
       return result;
+    },
+
+    detachSource: async (id) => {
+      const detail = await ipc.detachSource(id).catch((error) => {
+        toast.error(`转为内部管理失败：${String(error)}`);
+        return null;
+      });
+      if (!detail) return false;
+      const linkedSources = { ...get().linkedSources };
+      delete linkedSources[id];
+      set({ linkedSources, detail });
+      toast.success("已转为内部资料库管理");
+      return true;
     },
 
     addAttachments: async (parentId, childIds) => {

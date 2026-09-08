@@ -12,7 +12,7 @@ const success = { imported: [{}], skipped: [] };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 // Run the actual event listener with native events, React state and time controlled.
-function setup(importResult = () => Promise.resolve(success), { platform = "MacIntel", pixelRatio = 2 } = {}) {
+function setup(importResult = () => Promise.resolve(success), { platform = "MacIntel", pixelRatio = 2, confirming = false } = {}) {
   let handler, cleanup, feedback = null, unregisters = 0, renders = 0;
   const timers = new Map();
   const calls = [];
@@ -20,7 +20,12 @@ function setup(importResult = () => Promise.resolve(success), { platform = "MacI
   const store = createStore(() => ({
     view: { kind: "collection", id: "books" },
     collections: [{ id: "books", name: "阅读" }],
-    importPaths: (paths) => { calls.push({ paths, view: store.getState().view }); return importResult(); },
+    importConfirmation: null,
+    importPaths: (paths) => {
+      calls.push({ paths, view: store.getState().view });
+      if (confirming) store.setState({ importConfirmation: { paths } });
+      return importResult();
+    },
   }));
   const modules = {
     react: {
@@ -120,23 +125,34 @@ test("one drop imports once, retains progress on leave, then confirms for 600ms"
   app.cleanup();
 });
 
-test("partial success confirms; skipped, empty and failed imports never confirm", async () => {
-  for (const [result, phase, notice] of [
-    [{ imported: [{}], skipped: [{ reason: "已在库中" }] }, "success", "success"],
-    [{ imported: [], skipped: [{ reason: "已在库中" }] }, undefined, "warning"],
-    [{ imported: [], skipped: [] }, undefined, "info"],
-    [null, undefined, "error"],
+test("confirmation does not show importing progress", async () => {
+  let complete;
+  const app = setup(() => new Promise((resolve) => { complete = resolve; }), { confirming: true });
+  const pending = app.emit("drop");
+  assert.equal(app.feedback, null);
+  complete(success);
+  await pending;
+  assert.equal(app.feedback.phase, "success");
+  app.cleanup();
+});
+
+test("partial success confirms; centralized import handling owns notices", async () => {
+  for (const [result, phase] of [
+    [{ imported: [{}], skipped: [{ reason: "已在库中" }] }, "success"],
+    [{ imported: [], skipped: [{ reason: "已在库中" }] }, undefined],
+    [{ imported: [], skipped: [] }, undefined],
+    [null, undefined],
   ]) {
     const app = setup(() => Promise.resolve(result));
     await app.emit("drop");
     assert.equal(app.feedback?.phase, phase);
-    assert.equal(app.notices[0].kind, notice);
+    assert.equal(app.notices.length, 0);
     app.cleanup();
   }
   const app = setup(() => Promise.reject(new Error("IPC failed")));
   await app.emit("drop");
   assert.equal(app.feedback, null);
-  assert.equal(app.notices[0].kind, "error");
+  assert.equal(app.notices.length, 0);
   app.cleanup();
 });
 

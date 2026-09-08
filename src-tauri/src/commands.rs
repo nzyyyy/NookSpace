@@ -452,12 +452,42 @@ pub async fn import_files(
     state: State<'_, Library>,
     paths: Vec<String>,
     collection_id: Option<String>,
+    link_source: bool,
 ) -> Result<ImportResult, String> {
     let lib = state.inner().clone();
     blocking(lib, move |l| {
-        l.import_files(&paths, collection_id.as_deref())
+        l.import_files(&paths, collection_id.as_deref(), link_source)
     })
     .await
+}
+
+#[tauri::command]
+pub async fn sync_linked_sources(
+    state: State<'_, Library>,
+    ids: Option<Vec<String>>,
+) -> Result<LinkedSyncResult, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| l.sync_linked_sources(ids.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn relink_source(
+    state: State<'_, Library>,
+    id: String,
+    source_path: String,
+    strategy: Option<String>,
+) -> Result<RelinkSourceResult, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| {
+        l.relink_source(&id, &source_path, strategy.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn detach_source(state: State<'_, Library>, id: String) -> Result<ItemDetail, String> {
+    let lib = state.inner().clone();
+    blocking(lib, move |l| l.detach_source(&id)).await
 }
 
 #[tauri::command]

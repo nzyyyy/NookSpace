@@ -38,12 +38,7 @@ export function EmptyState({ view }: { view: View }) {
       title: "导入文件",
     });
     if (picked && picked.length > 0) {
-      const result = await importPaths(picked);
-      if (result) {
-        toast.success(
-          `已导入 ${result.imported.length} 个文件${result.skipped.length ? `，跳过 ${result.skipped.length} 个` : ""}`,
-        );
-      }
+      await importPaths(picked);
     }
   };
 

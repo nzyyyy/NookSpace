@@ -151,6 +151,8 @@ impl Library {
             return Err("导出目标不能是符号链接".into());
         }
 
+        let ids = [id.to_string()];
+        let _ = self.sync_linked_sources(Some(&ids));
         let _files = self.files_lock.lock().unwrap();
         let item = self.get_item(id)?.item;
         match item.item_type.as_str() {

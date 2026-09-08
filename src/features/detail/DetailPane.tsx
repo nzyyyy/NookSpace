@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Check,
+  AlertTriangle,
   ChevronDown,
   ExternalLink,
   File as FileIcon,
@@ -18,6 +19,7 @@ import {
   Tags,
   X,
 } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   convertFileSrc,
   ipc,
@@ -346,7 +348,10 @@ function FileIdentity({ item }: { item: Item }) {
   const [pendingFormat, setPendingFormat] = useState<SwitchableFormat | null>(null);
   const committed = displayStem(item.title, item.storedPath);
   const trashed = Boolean(item.deletedAt);
-  const showTitleInput = !trashed && (!switchable || noteMode === "edit");
+  const linkState = useLibrary((state) => state.linkedSources[item.id]);
+  const linked = linkState !== undefined;
+  const unavailable = linkState === "missing" || linkState === "error";
+  const showTitleInput = !trashed && !unavailable && (!switchable || noteMode === "edit");
 
   useEffect(() => {
     setStem(displayStem(item.title, item.storedPath));
@@ -382,7 +387,8 @@ function FileIdentity({ item }: { item: Item }) {
           {committed || "无标题"}
         </h2>
       )}
-      {switchable ? (
+      {linked && <Link2 className="size-3.5 shrink-0 text-muted-foreground" aria-label="已链接源文件" />}
+      {switchable && !linked ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -438,6 +444,62 @@ function FileIdentity({ item }: { item: Item }) {
   );
 }
 
+function LinkedSourceBanner({ item }: { item: Item }) {
+  const state = useLibrary((library) => library.linkedSources[item.id]);
+  const relinkSource = useLibrary((library) => library.relinkSource);
+  const detachSource = useLibrary((library) => library.detachSource);
+  const [conflictingPath, setConflictingPath] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  if (state !== "missing" && state !== "error") return null;
+
+  const pickSource = async () => {
+    const picked = await openDialog({ multiple: false, directory: false, title: "重新选择源文件" });
+    if (!picked) return;
+    setBusy(true);
+    const result = await relinkSource(item.id, picked);
+    setBusy(false);
+    if (result?.status === "needsChoice") setConflictingPath(picked);
+    else if (result?.status === "linked") toast.success("已恢复源文件链接");
+  };
+
+  const resolveConflict = async (strategy: "useSource" | "keepLibrary") => {
+    const path = conflictingPath;
+    if (!path) return;
+    setBusy(true);
+    const result = await relinkSource(item.id, path, strategy);
+    setBusy(false);
+    if (result?.status === "linked") {
+      setConflictingPath(null);
+      toast.success("已恢复源文件链接");
+    }
+  };
+
+  return <>
+    <div className="mx-4 mt-3 flex items-center gap-3 rounded-md border border-amber-500/35 bg-amber-500/8 px-3 py-2.5 text-[12px]" role="alert">
+      <AlertTriangle className="size-4 shrink-0 text-amber-600" />
+      <div className="min-w-0 flex-1">
+        <p className="font-medium">{state === "missing" ? "源文件已失联" : "源文件同步失败"}</p>
+        <p className="text-muted-foreground">安全副本仍可阅读、预览和导出；处理前不可编辑。</p>
+      </div>
+      <Button variant="outline" size="xs" disabled={busy} onClick={() => void pickSource()}>重新选择</Button>
+      <Button variant="ghost" size="xs" disabled={busy} onClick={() => void detachSource(item.id)}>转为内部管理</Button>
+    </div>
+    <Dialog open={conflictingPath !== null} onOpenChange={(open) => { if (!open && !busy) setConflictingPath(null); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>两份文件内容不同</DialogTitle>
+          <DialogDescription>请选择保留哪一份。另一份会被覆盖，此操作不会自动合并内容。</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={() => setConflictingPath(null)}>取消</Button>
+          <Button variant="outline" disabled={busy} onClick={() => void resolveConflict("keepLibrary")}>用安全副本覆盖源文件</Button>
+          <Button disabled={busy} onClick={() => void resolveConflict("useSource")}>采用源文件</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  </>;
+}
+
 function TextFileEditor({
   item,
   headerActions,
@@ -446,9 +508,11 @@ function TextFileEditor({
   headerActions: HTMLDivElement | null;
 }) {
   const [content, setContent] = useState("");
+  const linkState = useLibrary((state) => state.linkedSources[item.id]);
+  const sourceUnavailable = linkState === "missing" || linkState === "error";
   const noteMode = useLibrary((state) => state.noteMode);
   const setNoteMode = useLibrary((state) => state.setNoteMode);
-  const mode = item.deletedAt ? "read" : noteMode;
+  const mode = item.deletedAt || sourceUnavailable ? "read" : noteMode;
   const format = canonicalFormat(fileExtension(item.storedPath || item.title));
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -647,7 +711,10 @@ function TextFileEditor({
     };
     latestDraft.current = draft;
     draftWriter.current?.schedule(draft);
-    if (mounted.current) setSaveState(conflictVersion.current ? "conflict" : "dirty");
+    if (mounted.current) {
+      setContent(nextContent);
+      setSaveState(conflictVersion.current ? "conflict" : "dirty");
+    }
     if (!conflictVersion.current) scheduleSave(draft);
   };
   updateContentRef.current = updateContent;
@@ -699,6 +766,21 @@ function TextFileEditor({
     }
   };
 
+  useEffect(() => {
+    const synced = (event: Event) => {
+      const ids = (event as CustomEvent<string[]>).detail;
+      if (!ids.includes(item.id)) return;
+      if (latestDraft.current || snapshotter.current?.pending()) {
+        snapshotter.current?.flush();
+        void saver.current?.flush();
+      } else {
+        void reload();
+      }
+    };
+    window.addEventListener("nookspace:linked-source-updated", synced);
+    return () => window.removeEventListener("nookspace:linked-source-updated", synced);
+  }, [item.id]);
+
   const overwrite = () => {
     snapshotter.current?.flush();
     const draft = latestDraft.current;
@@ -722,7 +804,7 @@ function TextFileEditor({
       <div className="flex flex-1 flex-col items-center justify-center gap-3 py-12 text-center">
         <FileIcon className="size-12 text-muted-foreground/40" />
         <p className="max-w-md text-[12px] text-muted-foreground">{loadError}</p>
-        <Button variant="outline" size="sm" onClick={() => void ipc.openWithDefault(item.id)}>
+        <Button variant="outline" size="sm" disabled={sourceUnavailable} onClick={() => void ipc.openWithDefault(item.id)}>
           <ExternalLink className="size-3.5" /> 用默认应用打开
         </Button>
       </div>
@@ -753,7 +835,7 @@ function TextFileEditor({
             <Button variant={mode === "read" ? "default" : "ghost"} size="xs" aria-pressed={mode === "read"} onClick={() => changeMode("read")}>
               阅读
             </Button>
-            <Button variant={mode === "edit" ? "default" : "ghost"} size="xs" aria-pressed={mode === "edit"} onClick={() => changeMode("edit")} disabled={Boolean(item.deletedAt)}>
+            <Button variant={mode === "edit" ? "default" : "ghost"} size="xs" aria-pressed={mode === "edit"} onClick={() => changeMode("edit")} disabled={Boolean(item.deletedAt) || sourceUnavailable}>
               编辑
             </Button>
           </div>
@@ -850,6 +932,8 @@ function TextFileEditor({
 }
 
 function HtmlFileReader({ item }: { item: Item }) {
+  const linkState = useLibrary((state) => state.linkedSources[item.id]);
+  const sourceUnavailable = linkState === "missing" || linkState === "error";
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -881,7 +965,7 @@ function HtmlFileReader({ item }: { item: Item }) {
       <div className="flex flex-1 flex-col items-center justify-center gap-3 py-12 text-center">
         <FileIcon className="size-12 text-muted-foreground/40" />
         <p className="max-w-md text-[12px] text-muted-foreground">{loadError}</p>
-        <Button variant="outline" size="sm" onClick={() => void ipc.openWithDefault(item.id)}>
+        <Button variant="outline" size="sm" disabled={sourceUnavailable} onClick={() => void ipc.openWithDefault(item.id)}>
           <ExternalLink className="size-3.5" /> 用默认应用打开
         </Button>
       </div>
@@ -1069,6 +1153,8 @@ export function DetailPane() {
         )}
         {item && <DetailItemMenu item={item} />}
       </div>
+
+      {item && <LinkedSourceBanner item={item} />}
 
       {!item ? (
         detailLoading ? (

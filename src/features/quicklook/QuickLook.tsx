@@ -15,6 +15,7 @@ export function QuickLook() {
   const [detail, setDetail] = useState<ItemDetail | null>(null);
   const [absPath, setAbsPath] = useState<string | null>(null);
   const unlocked = useLibrary((state) => state.lockSession.unlocked);
+  const linkedSource = useLibrary((state) => quickLookId ? state.linkedSources[quickLookId] : undefined);
   const wasUnlocked = useRef(unlocked);
 
   useEffect(() => {
@@ -73,7 +74,7 @@ export function QuickLook() {
           <Button variant="ghost" size="icon-sm" onClick={() => void ipc.quicklook(item.id)} aria-label="系统快速查看">
             <Eye className="size-4" />
           </Button>
-          <Button variant="ghost" size="icon-sm" onClick={() => void ipc.openWithDefault(item.id)} aria-label="用默认应用打开">
+          <Button variant="ghost" size="icon-sm" disabled={linkedSource === "missing" || linkedSource === "error"} onClick={() => void ipc.openWithDefault(item.id)} aria-label="用默认应用打开">
             <ExternalLink className="size-4" />
           </Button>
           <Button variant="ghost" size="icon-sm" onClick={() => setQuickLookId(null)} aria-label="关闭">

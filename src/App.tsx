@@ -6,6 +6,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { clampPaneWidth } from "@/lib/pane-width";
 import { cn } from "@/lib/utils";
 import { useLibrary, type View } from "@/stores/library";
@@ -55,6 +56,24 @@ export default function App() {
     initTheme();
     void init();
   }, [init]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    void listen("linked-source-changed", () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => void useLibrary.getState().syncLinkedSources(), 150);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch(() => undefined);
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+      unlisten?.();
+    };
+  }, []);
 
   // Record navigation history for Cmd+[ / Cmd+]
   useEffect(() => {

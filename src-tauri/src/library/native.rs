@@ -224,10 +224,28 @@ pub fn write_text_file(
     }
     let original = fs::read(&path).map_err(|error| error.to_string())?;
     let current_version = sha256_bytes(&original);
-    if current_version != expected_version {
+    let linked_source = crate::library::import::linked_source(lib, id)?;
+    let source_version = if let Some(source) = &linked_source {
+        let metadata = fs::symlink_metadata(source)
+            .map_err(|_| "源文件已失联，请重新选择或转为内部管理".to_string())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err("源文件不可用，请重新选择或转为内部管理".into());
+        }
+        Some(crate::library::import::sha256_of(source)?)
+    } else {
+        None
+    };
+    if current_version != expected_version && source_version.as_deref() != Some(expected_version) {
         return Ok(TextFileWriteResult::Conflict {
             version: current_version,
         });
+    }
+    if let Some(source_version) = source_version.as_deref() {
+        if source_version != current_version && expected_version == current_version {
+            return Ok(TextFileWriteResult::Conflict {
+                version: source_version.to_string(),
+            });
+        }
     }
 
     let replacement = encode_text(content, encoding, line_ending)?;
@@ -236,30 +254,70 @@ pub fn write_text_file(
         return Ok(TextFileWriteResult::Saved { item, version });
     }
 
-    let parent = path.parent().ok_or("无效的库内文件目录")?;
-    let token = Uuid::new_v4();
-    let temporary = parent.join(format!(".nookspace-{token}.tmp"));
-    let backup = parent.join(format!(".nookspace-{token}.bak"));
+    struct Target {
+        path: std::path::PathBuf,
+        temporary: std::path::PathBuf,
+        backup: std::path::PathBuf,
+        replaced: bool,
+    }
+    let mut targets = std::iter::once(path.clone())
+        .chain(linked_source)
+        .map(|path| {
+            let parent = path.parent().ok_or("无效的文件目录")?;
+            let token = Uuid::new_v4();
+            let temporary = parent.join(format!(".nookspace-{token}.tmp"));
+            let backup = parent.join(format!(".nookspace-{token}.bak"));
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)
+                .map_err(|error| error.to_string())?;
+            file.write_all(&replacement)
+                .and_then(|_| file.sync_all())
+                .map_err(|error| error.to_string())?;
+            fs::set_permissions(
+                &temporary,
+                fs::metadata(&path)
+                    .map_err(|error| error.to_string())?
+                    .permissions(),
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(Target {
+                path,
+                temporary,
+                backup,
+                replaced: false,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let rollback = |targets: &mut [Target]| -> Result<(), String> {
+        let mut failure = None;
+        for target in targets.iter_mut().rev() {
+            let _ = fs::remove_file(&target.temporary);
+            if target.replaced {
+                let _ = fs::remove_file(&target.path);
+                if let Err(error) = fs::rename(&target.backup, &target.path) {
+                    failure = Some(error.to_string());
+                }
+                target.replaced = false;
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    };
+
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-            .map_err(|error| error.to_string())?;
-        file.write_all(&replacement)
-            .and_then(|_| file.sync_all())
-            .map_err(|error| error.to_string())?;
-        fs::set_permissions(
-            &temporary,
-            fs::metadata(&path)
-                .map_err(|error| error.to_string())?
-                .permissions(),
-        )
-        .map_err(|error| error.to_string())?;
-        fs::copy(&path, &backup).map_err(|error| error.to_string())?;
-        if let Err(error) = fs::rename(&temporary, &path) {
-            let _ = fs::remove_file(&backup);
-            return Err(error.to_string());
+        for index in 0..targets.len() {
+            if let Err(error) = fs::rename(&targets[index].path, &targets[index].backup) {
+                rollback(&mut targets)?;
+                return Err(error.to_string());
+            }
+            if let Err(error) = fs::rename(&targets[index].temporary, &targets[index].path) {
+                let _ = fs::rename(&targets[index].backup, &targets[index].path);
+                rollback(&mut targets[..index])?;
+                return Err(error.to_string());
+            }
+            targets[index].replaced = true;
         }
 
         let database_result = (|| {
@@ -280,18 +338,20 @@ pub fn write_text_file(
         })();
 
         if let Err(error) = database_result {
-            return match fs::rename(&backup, &path) {
+            return match rollback(&mut targets) {
                 Ok(()) => Err(error),
                 Err(restore_error) => Err(format!(
-                    "保存元数据失败：{error}；恢复原文件失败：{restore_error}"
+                    "保存元数据失败：{error}；恢复文件失败：{restore_error}"
                 )),
             };
         }
-        let _ = fs::remove_file(&backup);
+        for target in &targets {
+            let _ = fs::remove_file(&target.backup);
+        }
         Ok(())
     })();
     if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+        let _ = rollback(&mut targets);
     }
     result?;
 
@@ -308,7 +368,14 @@ pub fn open_with_default(lib: &Library, id: &str) -> Result<(), String> {
     if detail.item.item_type != "file" || detail.item.stored_path.is_empty() {
         return Err("该条目没有可打开的文件".into());
     }
-    let abs = lib.safe_stored_path(&detail.item.stored_path)?;
+    let abs = if let Some(source) = crate::library::import::linked_source(lib, id)? {
+        if !source.is_file() {
+            return Err("源文件已失联，请重新选择或转为内部管理".into());
+        }
+        source
+    } else {
+        lib.safe_stored_path(&detail.item.stored_path)?
+    };
     tauri_plugin_opener::open_path(&abs, None::<&str>).map_err(|e| e.to_string())
 }
 
