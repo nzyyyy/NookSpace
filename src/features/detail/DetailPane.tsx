@@ -1236,7 +1236,7 @@ function DetailPaneContent() {
                 <span>创建于 {formatFullDate(item.createdAt)}</span>
                 <span>修改于 {formatFullDate(item.updatedAt)}</span>
               </div>
-              <div className="mt-4 flex min-h-0 min-w-0 flex-1 flex-col">
+              <div className="mt-4 -mr-6 flex min-h-0 min-w-0 flex-1 flex-col">
                 <FilePreview item={item} headerActions={fileHeaderActions} />
               </div>
             </>

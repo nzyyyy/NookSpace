@@ -79,6 +79,7 @@ export function installReadingZoom(
     options.onMeasure?.();
     onChange(scale);
   };
+  let layoutBars = () => {};
   const render = () => {
     frame = 0;
     if (disposed) return;
@@ -121,6 +122,7 @@ export function installReadingZoom(
     appliedScale = scale;
     if (changed) notify();
     else options.onMeasure?.();
+    layoutBars();
   };
   const schedule = () => { if (!disposed && !frame) frame = requestAnimationFrame(render); };
   const excluded = (event: Event) => event.defaultPrevented
@@ -184,26 +186,106 @@ export function installReadingZoom(
   content.style.top = "0";
   content.style.left = "0";
   if (!scrollport) space.style.position = "relative";
-  viewport.classList.add("reading-zoom-overlay");
+  scroller.classList.add("reading-zoom-overlay");
   const doc = viewport.ownerDocument;
   if (doc?.head && !doc.getElementById("reading-zoom-overlay")) {
     const sheet = doc.createElement("style");
     sheet.id = "reading-zoom-overlay";
-    sheet.textContent = ".reading-zoom-overlay{scrollbar-width:thin;scrollbar-color:transparent transparent}"
-      + ".reading-zoom-overlay.is-scrolling,.reading-zoom-overlay:hover{scrollbar-color:color-mix(in oklab,CanvasText 35%,transparent) transparent}"
-      + ".reading-zoom-overlay::-webkit-scrollbar{width:9px;height:9px}"
-      + ".reading-zoom-overlay::-webkit-scrollbar-track,.reading-zoom-overlay::-webkit-scrollbar-corner{background:transparent}"
-      + ".reading-zoom-overlay::-webkit-scrollbar-thumb{background:transparent;border-radius:99px;border:2px solid transparent;background-clip:content-box}"
-      + ".reading-zoom-overlay.is-scrolling::-webkit-scrollbar-thumb,.reading-zoom-overlay:hover::-webkit-scrollbar-thumb{background-color:color-mix(in oklab,CanvasText 32%,transparent)}";
+    // Native ::-webkit-scrollbar { width } creates a permanent classic gutter; hide it and paint overlay thumbs.
+    sheet.textContent = ".reading-zoom-overlay{scrollbar-width:none!important}"
+      + ".reading-zoom-overlay::-webkit-scrollbar{display:none!important;width:0!important;height:0!important;background:transparent}"
+      + ".reading-zoom-bars{position:absolute;inset:0;pointer-events:none;z-index:3}"
+      + ".reading-zoom-bars>div{position:absolute;border-radius:99px;background:color-mix(in oklab,CanvasText 32%,transparent);opacity:0;pointer-events:none;transition:opacity .15s linear}"
+      + ".reading-zoom-bars.is-scrolling>div{opacity:1;pointer-events:auto}"
+      + ".reading-zoom-bars>.v{top:0;right:1px;width:6px}"
+      + ".reading-zoom-bars>.h{left:0;bottom:1px;height:6px}";
     doc.head.append(sheet);
   }
-  let hideBars = 0;
-  const revealBars = () => {
-    viewport.classList.add("is-scrolling");
-    clearTimeout(hideBars);
-    hideBars = setTimeout(() => viewport.classList.remove("is-scrolling"), 700);
+  const parent = viewport.parentElement;
+  const bars = doc?.createElement("div");
+  const vBar = doc?.createElement("div");
+  const hBar = doc?.createElement("div");
+  let parentPosition: string | null = null;
+  if (bars && vBar && hBar && parent) {
+    if (getComputedStyle(parent).position === "static") {
+      parentPosition = parent.style.position;
+      parent.style.position = "relative";
+    }
+    bars.className = "reading-zoom-bars";
+    vBar.className = "v";
+    hBar.className = "h";
+    bars.append(vBar, hBar);
+    parent.append(bars);
+  }
+  const thumb = (track: number, client: number, scroll: number, offset: number) => {
+    if (scroll <= client + 1) return null;
+    const size = Math.max(24, track * client / scroll);
+    const max = Math.max(0, track - size);
+    return { size, offset: scroll - client > 0 ? offset / (scroll - client) * max : 0 };
   };
-  viewport.addEventListener("scroll", revealBars, { passive: true });
+  layoutBars = () => {
+    if (!vBar || !hBar) return;
+    const vertical = thumb(viewport.clientHeight, scroller.clientHeight, scroller.scrollHeight, scroller.scrollTop);
+    const horizontal = thumb(viewport.clientWidth, scroller.clientWidth, scroller.scrollWidth, scroller.scrollLeft);
+    vBar.style.display = vertical ? "" : "none";
+    if (vertical) {
+      vBar.style.height = `${vertical.size}px`;
+      vBar.style.transform = `translateY(${vertical.offset}px)`;
+    }
+    hBar.style.display = horizontal ? "" : "none";
+    if (horizontal) {
+      hBar.style.width = `${horizontal.size}px`;
+      hBar.style.transform = `translateX(${horizontal.offset}px)`;
+    }
+  };
+  let hideBars = 0;
+  let dragging = false;
+  const revealBars = () => {
+    layoutBars();
+    bars?.classList.add("is-scrolling");
+    scroller.classList.add("is-scrolling");
+    clearTimeout(hideBars);
+    if (!dragging) hideBars = setTimeout(() => {
+      bars?.classList.remove("is-scrolling");
+      scroller.classList.remove("is-scrolling");
+    }, 700);
+  };
+  const onBarPointer = (event: PointerEvent) => {
+    if (!event.isPrimary || event.button) return;
+    const vertical = event.currentTarget === vBar;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    dragging = true;
+    const start = vertical ? event.clientY : event.clientX;
+    const scroll = vertical ? scroller.scrollTop : scroller.scrollLeft;
+    const move = (next: PointerEvent) => {
+      const metrics = vertical
+        ? thumb(viewport.clientHeight, scroller.clientHeight, scroller.scrollHeight, 0)
+        : thumb(viewport.clientWidth, scroller.clientWidth, scroller.scrollWidth, 0);
+      if (!metrics) return;
+      const delta = (vertical ? next.clientY : next.clientX) - start;
+      const range = vertical
+        ? scroller.scrollHeight - scroller.clientHeight
+        : scroller.scrollWidth - scroller.clientWidth;
+      const max = Math.max(1, (vertical ? viewport.clientHeight : viewport.clientWidth) - metrics.size);
+      if (vertical) scroller.scrollTop = scroll + delta * range / max;
+      else scroller.scrollLeft = scroll + delta * range / max;
+    };
+    const up = () => {
+      dragging = false;
+      vBar?.removeEventListener("pointermove", move);
+      hBar?.removeEventListener("pointermove", move);
+      vBar?.removeEventListener("pointerup", up);
+      hBar?.removeEventListener("pointerup", up);
+      revealBars();
+    };
+    (vertical ? vBar : hBar)?.addEventListener("pointermove", move);
+    (vertical ? vBar : hBar)?.addEventListener("pointerup", up);
+    revealBars();
+  };
+  vBar?.addEventListener("pointerdown", onBarPointer);
+  hBar?.addEventListener("pointerdown", onBarPointer);
+  scroller.addEventListener("scroll", revealBars, { passive: true });
   viewport.addEventListener("wheel", wheel, { passive: false });
   viewport.addEventListener("gesturestart", start, { passive: false });
   viewport.addEventListener("gesturechange", change, { passive: false });
@@ -235,12 +317,16 @@ export function installReadingZoom(
       cancelAnimationFrame(frame);
       clearTimeout(hideBars);
       observer.disconnect();
-      viewport.removeEventListener("scroll", revealBars);
+      vBar?.removeEventListener("pointerdown", onBarPointer);
+      hBar?.removeEventListener("pointerdown", onBarPointer);
+      scroller.removeEventListener("scroll", revealBars);
       viewport.removeEventListener("wheel", wheel);
       viewport.removeEventListener("gesturestart", start);
       viewport.removeEventListener("gesturechange", change);
       viewport.removeEventListener("gestureend", end);
-      viewport.classList.remove("reading-zoom-overlay", "is-scrolling");
+      scroller.classList.remove("reading-zoom-overlay", "is-scrolling");
+      bars?.remove();
+      if (parent && parentPosition !== null) parent.style.position = parentPosition;
       [viewport, content, space].forEach((element, index) => {
         if (original[index] === null) element.removeAttribute("style");
         else element.setAttribute("style", original[index]!);

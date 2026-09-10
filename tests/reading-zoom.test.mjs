@@ -94,6 +94,21 @@ globalThis.requestAnimationFrame ??= () => 0;
 globalThis.cancelAnimationFrame ??= () => {};
 globalThis.getComputedStyle ??= () => ({});
 
+test("overlay hides native scrollbars and only stays visible while scrolling", (t) => {
+  const source = installReadingZoom.toString();
+  assert.equal(source.includes("scrollbar-width:none"), true);
+  assert.equal(/::-webkit-scrollbar\{width:9px/.test(source), false);
+  const timeouts = [];
+  t.mock.method(globalThis, "setTimeout", (fn, ms) => { timeouts.push({ fn, ms }); return timeouts.length; });
+  t.mock.method(globalThis, "clearTimeout", () => {});
+  const s = surface(t);
+  s.viewport.dispatchEvent(new Event("scroll"));
+  assert.equal(s.viewport.classList.contains("is-scrolling"), true);
+  assert.equal(timeouts.at(-1).ms, 700);
+  timeouts.at(-1).fn();
+  assert.equal(s.viewport.classList.contains("is-scrolling"), false);
+});
+
 test("controller coalesces frames, preserves anchors, deduplicates WebKit then wheel, and resets", (t) => {
   const s = surface(t);
   assert.equal(s.viewport.classList.contains("reading-zoom-overlay"), true);
@@ -134,6 +149,10 @@ test("wheel-first duplicate gestures and nested charts do not double-zoom", (t) 
 
 test("CodeMirror scrollport uses logical pixels and consumes momentum once", (t) => {
   const s = surface(t, true);
+  assert.equal(s.content.classList.contains("reading-zoom-overlay"), true);
+  assert.equal(s.viewport.classList.contains("reading-zoom-overlay"), false);
+  s.content.dispatchEvent(new Event("scroll"));
+  assert.equal(s.content.classList.contains("is-scrolling"), true);
   s.content.scrollTop = 600;
   s.emit("gesturestart");
   s.emit("gesturechange", { scale: 2 });
@@ -157,6 +176,8 @@ test("resize/content changes update bounds; disposal cancels queued work and lis
   s.zoom.destroy();
   assert.equal(s.frames.size, 0);
   assert.equal(s.observers[0].disconnected, true);
+  assert.equal(s.viewport.classList.contains("reading-zoom-overlay"), false);
+  assert.equal(s.viewport.classList.contains("is-scrolling"), false);
   assert.equal(s.emit("wheel", { ctrlKey: true, deltaY: -100 }).defaultPrevented, false);
 });
 
