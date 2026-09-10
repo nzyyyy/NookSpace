@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Check,
@@ -47,7 +47,8 @@ import { useItemActions } from "@/features/list/item-actions";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ReadingZoomButton, ReadingZoomProvider, ReadingZoomViewport, useReadingZoomSession } from "./ReadingZoom";
+import { htmlReadingScale, withHtmlReadingZoom } from "./html-reading-zoom";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -513,6 +514,8 @@ function TextFileEditor({
   const noteMode = useLibrary((state) => state.noteMode);
   const setNoteMode = useLibrary((state) => state.setNoteMode);
   const mode = item.deletedAt || sourceUnavailable ? "read" : noteMode;
+  const zoomSession = useReadingZoomSession();
+  useEffect(() => { if (mode === "edit") zoomSession?.reset(); }, [mode, zoomSession]);
   const format = canonicalFormat(fileExtension(item.storedPath || item.title));
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -867,7 +870,7 @@ function TextFileEditor({
         ref={searchScopeRef}
         data-document-search-scope
         tabIndex={-1}
-        className="relative flex min-h-[360px] min-w-0 flex-1 flex-col gap-3 outline-none"
+        className="relative flex min-h-0 min-w-0 flex-1 flex-col gap-3 outline-none"
         onPointerDownCapture={(event) => {
           const target = event.target;
           if (target instanceof Element
@@ -937,6 +940,26 @@ function HtmlFileReader({ item }: { item: Item }) {
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const zoomSession = useReadingZoomSession();
+  const srcDoc = useMemo(() => content ? withHtmlReadingZoom(content) : "", [content]);
+  useEffect(() => {
+    if (!zoomSession || loading || loadError) return;
+    let scale = 1;
+    const unregister = zoomSession.register({
+      getScale: () => scale,
+      reset: () => iframeRef.current?.contentWindow?.postMessage({ type: "nookspace-reading-reset" }, "*"),
+      destroy: () => undefined,
+    });
+    const receive = (event: MessageEvent) => {
+      const next = htmlReadingScale(event, iframeRef.current?.contentWindow ?? null);
+      if (next === null) return;
+      scale = next;
+      zoomSession.changed();
+    };
+    window.addEventListener("message", receive);
+    return () => { window.removeEventListener("message", receive); unregister(); };
+  }, [zoomSession, loading, loadError]);
 
   useEffect(() => {
     let alive = true;
@@ -974,10 +997,11 @@ function HtmlFileReader({ item }: { item: Item }) {
 
   return (
     <iframe
+      ref={iframeRef}
       title={`阅读 ${item.title}`}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
-      srcDoc={content}
+      srcDoc={srcDoc}
       className="min-h-0 w-full flex-1 border-0 bg-white"
     />
   );
@@ -1027,23 +1051,24 @@ function FilePreview({
   }
   if (item.mime.startsWith("image/")) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center bg-muted/40">
+      <ReadingZoomViewport className="bg-muted/40">
         <img
           src={src}
           alt={item.title}
-          className="max-h-full max-w-full rounded-md object-contain"
+          className="w-full rounded-md object-contain"
+          style={{ height: "var(--reading-viewport-height)" }}
           draggable={false}
         />
-      </div>
+      </ReadingZoomViewport>
     );
   }
   if (item.mime === "application/pdf") {
     return (
-      <div className="min-h-0 flex-1 rounded-md border border-border bg-muted/30">
+      <ReadingZoomViewport className="rounded-md border border-border bg-muted/30">
         <Suspense fallback={<p className="py-12 text-center font-mono text-[11px] text-muted-foreground">正在载入 PDF…</p>}>
-          <PdfPreview src={src} itemId={item.id} title={item.title} />
+          <PdfPreview src={src} itemId={item.id} title={item.title} readingZoom />
         </Suspense>
-      </div>
+      </ReadingZoomViewport>
     );
   }
   return (
@@ -1082,6 +1107,11 @@ function DetailItemMenu({ item }: { item: Item }) {
 }
 
 export function DetailPane() {
+  const selectedId = useLibrary((state) => state.selectedId);
+  return <ReadingZoomProvider key={selectedId}><DetailPaneContent /></ReadingZoomProvider>;
+}
+
+function DetailPaneContent() {
   const item = useLibrary((state) => state.detail?.item);
   const selectedId = useLibrary((state) => state.selectedId);
   const selectedLocked = useLibrary((state) => state.items.find((candidate) => candidate.id === state.selectedId)?.effectiveLocked ?? false);
@@ -1133,6 +1163,7 @@ export function DetailPane() {
           </>
         )}
         <div className="flex-1" />
+        <ReadingZoomButton />
         {item?.itemType === "file" && (
           <div ref={setFileHeaderActions} className="flex items-center gap-2" />
         )}
@@ -1183,13 +1214,12 @@ export function DetailPane() {
         </div>
       ) : (
       <div className="flex min-h-0 flex-1 flex-col">
-        <ScrollArea
-          type="scroll"
-          className="min-h-0 flex-1 [&_[data-slot=scroll-area-scrollbar]]:w-1.5 [&_[data-slot=scroll-area-scrollbar]]:py-3 [&_[data-slot=scroll-area-thumb]]:bg-muted-foreground/45 [&_[data-slot=scroll-area-viewport]>div]:!block"
+        <div
+          className={cn("flex min-h-0 flex-1 flex-col", item.itemType === "file" ? "overflow-hidden" : "overflow-auto")}
         >
           <div
             className={cn(
-              "flex min-h-full w-full min-w-0 max-w-full flex-col px-6 pt-5",
+              "flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col px-6 pt-5",
               item.itemType === "file"
                 && isSwitchableText(item.storedPath || item.title)
                 && !isTrashed
@@ -1231,7 +1261,7 @@ export function DetailPane() {
           )}
 
           </div>
-        </ScrollArea>
+        </div>
         {item.itemType === "file" && isSwitchableText(item.storedPath || item.title) && !isTrashed && (
           <footer
             className="max-h-[35%] shrink-0 overflow-y-auto border-t border-border px-6 py-3"

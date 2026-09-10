@@ -1,6 +1,7 @@
 import {
   Suspense,
   lazy,
+  memo,
   startTransition,
   useEffect,
   useLayoutEffect,
@@ -11,7 +12,9 @@ import {
 } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Panzoom, { type PanzoomObject } from "@panzoom/panzoom";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { observeElementOffset, useVirtualizer } from "@tanstack/react-virtual";
+import { useReadingZoom } from "./ReadingZoom";
+import { createZoomMath } from "./reading-zoom";
 import { ArrowDown, ArrowUp, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { MarkdownBlock, MarkdownWorkerMessage } from "./markdown-render";
@@ -151,6 +154,12 @@ function MermaidBlock({ block, dark }: { block: MarkdownBlock; dark: boolean }) 
       pinchAndPan: true,
     });
     panzoomRef.current = panzoom;
+    let gestureActive = false;
+    let gestureUsesWheel = false;
+    let wheelAt = -Infinity;
+    let gestureScale = 1;
+    let gestureEndedAt = -Infinity;
+    const math = createZoomMath();
     const syncZoom = (event: Event) => {
       const scale = (event as CustomEvent<{ scale: number }>).detail.scale;
       zoomRef.current = scale * 100;
@@ -158,19 +167,41 @@ function MermaidBlock({ block, dark }: { block: MarkdownBlock; dark: boolean }) 
     };
     const navigateWithTrackpad = (event: WheelEvent) => {
       event.preventDefault();
+      event.stopPropagation();
       if (event.ctrlKey) {
-        panzoom.zoomWithWheel(event);
+        if (math.wheelAllowed(gestureActive && !gestureUsesWheel, gestureEndedAt, performance.now())) {
+          wheelAt = performance.now();
+          panzoom.zoomWithWheel(event);
+        }
       } else {
         const { x, y } = panzoom.getPan();
         const scale = panzoom.getScale();
-        panzoom.pan(x - event.deltaX / scale, y - event.deltaY / scale);
+        const documentScale = Number(viewport.closest<HTMLElement>("[data-reading-scale]")?.dataset.readingScale) || 1;
+        panzoom.pan(x - event.deltaX / scale / documentScale, y - event.deltaY / scale / documentScale);
+      }
+    };
+    const gesture = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.type === "gesturestart") {
+        gestureActive = true;
+        gestureUsesWheel = performance.now() - wheelAt <= 100;
+        gestureScale = panzoom.getScale();
+      } else if (event.type === "gestureend") {
+        gestureActive = false;
+        gestureEndedAt = performance.now();
+      } else if (gestureActive && !gestureUsesWheel) {
+        const point = event as Event & { scale: number; clientX: number; clientY: number };
+        if (Number.isFinite(point.scale)) panzoom.zoomToPoint(gestureScale * point.scale, point, { animate: false });
       }
     };
     canvas.addEventListener("panzoomchange", syncZoom);
     viewport.addEventListener("wheel", navigateWithTrackpad, { passive: false });
+    for (const type of ["gesturestart", "gesturechange", "gestureend"]) viewport.addEventListener(type, gesture, { passive: false });
     return () => {
       canvas.removeEventListener("panzoomchange", syncZoom);
       viewport.removeEventListener("wheel", navigateWithTrackpad);
+      for (const type of ["gesturestart", "gesturechange", "gestureend"]) viewport.removeEventListener(type, gesture);
       panzoom.destroy();
       panzoomRef.current = null;
     };
@@ -214,11 +245,11 @@ function MermaidBlock({ block, dark }: { block: MarkdownBlock; dark: boolean }) 
   );
 }
 
-function RenderedBlock({ block, matches, dark }: { block: MarkdownBlock; matches: HighlightMatch[]; dark: boolean }) {
+const RenderedBlock = memo(function RenderedBlock({ block, matches, dark }: { block: MarkdownBlock; matches: HighlightMatch[]; dark: boolean }) {
   return block.mermaidSource === undefined
     ? <RenderedHtmlBlock block={block} matches={matches} />
     : <MermaidBlock block={block} dark={dark} />;
-}
+});
 
 export default function MarkdownReader({
   content,
@@ -234,6 +265,8 @@ export default function MarkdownReader({
   onSearchOpenChange: (open: boolean) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const spaceRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const dark = useDarkTheme();
   const blocksRef = useRef<MarkdownBlock[]>([]);
@@ -245,6 +278,7 @@ export default function MarkdownReader({
   const [regexp, setRegexp] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  useReadingZoom(scrollRef, contentRef, spaceRef, !error);
 
   useEffect(() => {
     let alive = true;
@@ -286,6 +320,32 @@ export default function MarkdownReader({
     getItemKey: (index) => blocksRef.current[index]?.key ?? index,
     overscan: 4,
     gap: 16,
+    observeElementRect: (instance, callback) => {
+      const element = instance.scrollElement;
+      if (!element) return;
+      const update = () => {
+        const scale = Number(element.dataset.readingScale) || 1;
+        callback({ width: element.clientWidth / scale, height: element.clientHeight / scale });
+      };
+      const observer = new ResizeObserver(update);
+      observer.observe(element);
+      element.addEventListener("readingzoomchange", update);
+      update();
+      return () => { observer.disconnect(); element.removeEventListener("readingzoomchange", update); };
+    },
+    observeElementOffset: (instance, callback) => {
+      const element = instance.scrollElement;
+      if (!element) return;
+      const update = () => callback(element.scrollTop / (Number(element.dataset.readingScale) || 1), false);
+      const cleanup = observeElementOffset(instance, (offset, scrolling) => callback(offset / (Number(element.dataset.readingScale) || 1), scrolling));
+      element.addEventListener("readingzoomchange", update);
+      return () => { cleanup?.(); element.removeEventListener("readingzoomchange", update); };
+    },
+    measureElement: (element, entry) => entry?.borderBoxSize?.[0]?.blockSize ?? (element as HTMLElement).offsetHeight,
+    scrollToFn: (offset, { adjustments = 0, behavior }, instance) => {
+      const element = instance.scrollElement;
+      element?.scrollTo({ top: (offset + adjustments) * (Number(element.dataset.readingScale) || 1), behavior });
+    },
   });
 
   const searchResult = useMemo(() => searchMarkdownBlocks(blocksRef.current, {
@@ -402,7 +462,7 @@ export default function MarkdownReader({
   }
 
   return (
-    <div className="relative flex min-h-[360px] min-w-0 flex-1">
+    <div className="relative flex min-h-0 min-w-0 flex-1">
       {searchOpen && (
         <div
           className="fixed top-14 right-6 z-20 flex max-w-[calc(100%-16px)] items-center gap-0.5 overflow-x-auto rounded-lg border border-border bg-background p-1.5 text-xs shadow-[0_8px_24px_color-mix(in_oklab,var(--foreground)_12%,transparent)]"
@@ -488,13 +548,15 @@ export default function MarkdownReader({
       )}
       <div
         ref={scrollRef}
-        className="markdown-reader min-w-0 flex-1 overflow-auto pr-2"
+        className="absolute inset-0 min-w-0 overflow-auto"
         role="document"
         tabIndex={0}
         aria-label={ariaLabel}
         aria-busy={loading}
         onClick={openMarkdownLink}
       >
+        <div ref={spaceRef}>
+        <div ref={contentRef} className="markdown-reader flow-root pr-2">
         {loading && count === 0 ? (
           <p className="py-12 text-center font-mono text-[11px] text-muted-foreground">正在渲染 Markdown…</p>
         ) : count === 0 ? (
@@ -527,6 +589,8 @@ export default function MarkdownReader({
             />
           ))
         )}
+        </div>
+        </div>
       </div>
     </div>
   );

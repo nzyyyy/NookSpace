@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { parseCsv } from "@/lib/text-views";
+import { useReadingZoom } from "./ReadingZoom";
 
 const ROW_HEIGHT = 34;
 const OVERSCAN = 10;
@@ -7,18 +8,31 @@ const OVERSCAN = 10;
 export default function CsvTable({ content }: { content: string }) {
   const rows = useMemo(() => parseCsv(content), [content]);
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const spaceRef = useRef<HTMLDivElement>(null);
+  useReadingZoom(scrollerRef, contentRef, spaceRef, rows !== null && rows.length > 0);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewport, setViewport] = useState(360);
 
   useEffect(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
-    const update = () => setViewport(scroller.clientHeight);
+    const update = () => {
+      const scale = Number(scroller.dataset.readingScale) || 1;
+      setViewport(scroller.clientHeight / scale);
+      setScrollTop(scroller.scrollTop / scale);
+    };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(scroller);
-    return () => observer.disconnect();
-  }, []);
+    scroller.addEventListener("readingzoomchange", update);
+    scroller.addEventListener("scroll", update, { passive: true });
+    return () => {
+      observer.disconnect();
+      scroller.removeEventListener("readingzoomchange", update);
+      scroller.removeEventListener("scroll", update);
+    };
+  }, [rows]);
 
   if (rows === null) {
     return <p className="text-[12px] text-muted-foreground">CSV 无法解析，请切换到编辑查看原文</p>;
@@ -36,11 +50,14 @@ export default function CsvTable({ content }: { content: string }) {
   const slice = body.slice(start, end);
 
   return (
+    <div className="relative min-h-0 min-w-0 flex-1">
     <div
       ref={scrollerRef}
-      className="min-h-0 min-w-0 flex-1 overflow-auto rounded-lg border border-border bg-card/40"
-      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      className="absolute inset-0 overflow-auto rounded-lg border border-border bg-card/40"
+      tabIndex={0}
+      aria-label="CSV 表格"
     >
+      <div ref={spaceRef}><div ref={contentRef}>
       <table className="min-w-full border-separate border-spacing-0 text-[13px]">
         <thead>
           <tr>
@@ -82,6 +99,8 @@ export default function CsvTable({ content }: { content: string }) {
           )}
         </tbody>
       </table>
+      </div></div>
+    </div>
     </div>
   );
 }

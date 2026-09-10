@@ -16,12 +16,14 @@ import {
   searchKeymap,
   searchPanelOpen,
 } from "@codemirror/search";
-import { EditorView, keymap, lineNumbers } from "@codemirror/view";
+import { EditorView, keymap, lineNumbers, panels } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 import { minimalSetup } from "codemirror";
 import type { SwitchableFormat } from "@/lib/file-types";
 import type { TextSnapshot } from "@/lib/text-file-draft";
 import { foldPlaceholderLabel } from "./fold-placeholder";
+import { useReadingZoomSession } from "./ReadingZoom";
+import { createZoomMath, installReadingZoom } from "./reading-zoom";
 
 const csvLanguage = StreamLanguage.define({
   name: "csv",
@@ -316,6 +318,8 @@ export default function TextEditor({
   onSearchOpenChange?: (open: boolean) => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const zoomSession = useReadingZoomSession();
   const viewRef = useRef<EditorView | null>(null);
   const modeRef = useRef(new Compartment());
   const languageRef = useRef(new Compartment());
@@ -336,6 +340,7 @@ export default function TextEditor({
       parent,
       extensions: [
         minimalSetup,
+        panels({ bottomContainer: panelRef.current! }),
         foldGutter(),
         codeFolding({
           preparePlaceholder: foldPlaceholderLabel,
@@ -387,6 +392,26 @@ export default function TextEditor({
 
   useEffect(() => {
     const view = viewRef.current;
+    if (!readOnly || !zoomSession || !view) return;
+    const oldMinHeight = view.dom.style.minHeight;
+    view.dom.style.minHeight = "0";
+    const zoom = installReadingZoom(view.dom, view.scrollDOM, view.contentDOM, createZoomMath(), zoomSession.changed, {
+      scrollport: true,
+      contentInset: view.scrollDOM.querySelector<HTMLElement>(".cm-gutters")?.offsetWidth ?? 0,
+      initialScale: zoomSession.getInitialScale(),
+      onMeasure: () => view.requestMeasure(),
+    });
+    const unregister = zoomSession.register(zoom);
+    return () => {
+      unregister();
+      zoom.destroy();
+      view.dom.style.minHeight = oldMinHeight;
+      if (view.dom.isConnected) view.requestMeasure();
+    };
+  }, [readOnly, zoomSession]);
+
+  useEffect(() => {
+    const view = viewRef.current;
     if (!view) return;
     view.dispatch({
       effects: modeRef.current.reconfigure(modeExtensions(readOnly, ariaLabel)),
@@ -409,5 +434,10 @@ export default function TextEditor({
     else closeSearchPanel(view);
   }, [searchOpen]);
 
-  return <div ref={parentRef} className="-ml-10 min-h-0 min-w-0 flex-1 overflow-hidden" />;
+  return <>
+    <div ref={panelRef} className="contents" data-reading-zoom-ignore />
+    <div className="relative -ml-10 min-h-0 min-w-0 flex-1 overflow-hidden">
+      <div ref={parentRef} className="absolute inset-0" />
+    </div>
+  </>;
 }
