@@ -15,6 +15,7 @@ import Panzoom, { type PanzoomObject } from "@panzoom/panzoom";
 import { observeElementOffset, useVirtualizer } from "@tanstack/react-virtual";
 import { useReadingZoom } from "./ReadingZoom";
 import { createZoomMath } from "./reading-zoom";
+import { mermaidWheelScale } from "./mermaid-zoom";
 import { ArrowDown, ArrowUp, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { MarkdownBlock, MarkdownWorkerMessage } from "./markdown-render";
@@ -109,6 +110,8 @@ function RenderedHtmlBlock({ block, matches }: { block: MarkdownBlock; matches: 
 function MermaidBlock({ block, dark }: { block: MarkdownBlock; dark: boolean }) {
   const [id] = useState(() => `markdown-mermaid-${mermaidDiagramId += 1}`);
   const [svg, setSvg] = useState("");
+  // Keep SVG nodes alive during zoom updates so an active gesture retains its target.
+  const svgMarkup = useMemo(() => ({ __html: svg }), [svg]);
   const [failed, setFailed] = useState(false);
   const [zoom, setZoom] = useState(100);
   const zoomRef = useRef(zoom);
@@ -150,7 +153,6 @@ function MermaidBlock({ block, dark }: { block: MarkdownBlock; dark: boolean }) 
       minScale: 0.5,
       maxScale: 2,
       startScale: zoomRef.current / 100,
-      step: 0.2,
       pinchAndPan: true,
     });
     panzoomRef.current = panzoom;
@@ -162,8 +164,10 @@ function MermaidBlock({ block, dark }: { block: MarkdownBlock; dark: boolean }) 
     const math = createZoomMath();
     const syncZoom = (event: Event) => {
       const scale = (event as CustomEvent<{ scale: number }>).detail.scale;
+      const previous = Math.round(zoomRef.current);
       zoomRef.current = scale * 100;
-      setZoom(zoomRef.current);
+      const percentage = Math.round(zoomRef.current);
+      if (percentage !== previous) setZoom(percentage);
     };
     const navigateWithTrackpad = (event: WheelEvent) => {
       event.preventDefault();
@@ -171,7 +175,9 @@ function MermaidBlock({ block, dark }: { block: MarkdownBlock; dark: boolean }) 
       if (event.ctrlKey) {
         if (math.wheelAllowed(gestureActive && !gestureUsesWheel, gestureEndedAt, performance.now())) {
           wheelAt = performance.now();
-          panzoom.zoomWithWheel(event);
+          const scale = panzoom.getScale();
+          const next = mermaidWheelScale(scale, event.deltaY, event.deltaMode, viewport.clientHeight);
+          if (next !== scale) panzoom.zoomToPoint(next, event, { animate: false });
         }
       } else {
         const { x, y } = panzoom.getPan();
@@ -231,7 +237,7 @@ function MermaidBlock({ block, dark }: { block: MarkdownBlock; dark: boolean }) 
             <div
               ref={canvasRef}
               className="markdown-mermaid-canvas"
-              dangerouslySetInnerHTML={{ __html: svg }}
+              dangerouslySetInnerHTML={svgMarkup}
             />
           </div>
         </div>
