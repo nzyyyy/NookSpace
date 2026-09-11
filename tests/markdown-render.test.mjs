@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import hljs from "highlight.js/lib/core";
+import { searchMarkdownBlocks } from "../src/features/detail/markdown-search.ts";
 import {
   MARKDOWN_BLOCK_BATCH_SIZE,
   MAX_MARKDOWN_BLOCK_CHARS,
@@ -7,6 +9,61 @@ import {
   markdownBlockBatches,
   renderMarkdownBlocks,
 } from "../src/features/detail/markdown-render.ts";
+
+const fenced = (language, code) => renderMarkdownBlocks(`\`\`\`${language}\n${code}\n\`\`\``)[0];
+
+test("highlights supported languages and aliases without changing searchable text", () => {
+  const samples = {
+    python: 'def greet(): return "hello"', javascript: 'const value = "hello";',
+    typescript: 'const value: string = "hello";', go: 'package main\nfunc main() {}',
+    rust: 'fn main() { let value = 1; }', java: 'class Main { int value = 1; }',
+    c: 'int main(void) { return 0; }', cpp: 'class Main { public: int value = 1; };',
+    json: '{"value": true}', yaml: 'value: true', xml: '<div class="hello">hello</div>',
+    css: '.hello { color: red; }', bash: 'echo "$HOME"', sql: 'SELECT * FROM items;',
+    markdown: '# Heading **bold**',
+  };
+  const aliases = { py: "python", js: "javascript", ts: "typescript", golang: "go", yml: "yaml", html: "xml", sh: "bash", shell: "bash" };
+  for (const [language, code] of Object.entries(samples)) {
+    const block = fenced(language, code);
+    assert.match(block.html, /<span class="hljs-/, language);
+    assert.equal(block.searchText, `${code}\n\n`, language);
+  }
+  for (const [alias, language] of Object.entries(aliases)) {
+    assert.match(fenced(alias.toUpperCase(), samples[language]).html, /<span class="hljs-/, alias);
+  }
+});
+
+test("keeps plain, unknown and Mermaid code unhighlighted and safely escaped", () => {
+  for (const language of ["", "txt", "text", "plaintext", "unknown", "mermaid"]) {
+    const block = fenced(language, '<script>alert("hello")</script>');
+    assert.doesNotMatch(block.html, /<span|<script>/);
+    assert.match(block.html, /&lt;script&gt;/);
+  }
+  const block = fenced("html", '<script>alert("hello")</script>');
+  assert.doesNotMatch(block.html, /<script>/);
+  assert.equal(block.searchText, '<script>alert("hello")</script>\n\n');
+});
+
+test("falls back to escaped code if highlighting throws", (t) => {
+  t.mock.method(hljs, "highlight", () => { throw new Error("highlight failed"); });
+  const block = fenced("js", "<script>bad()</script>");
+  assert.doesNotMatch(block.html, /<script>|hljs-/);
+  assert.match(block.html, /&lt;script&gt;/);
+});
+
+test("search matches span multiple highlighted tokens", () => {
+  const block = fenced("js", 'const value = "hello";');
+  const search = 'value = "hello"';
+  const result = searchMarkdownBlocks([block], { search, caseSensitive: true, regexp: false, wholeWord: false });
+  assert.deepEqual(result.matches, [{ blockIndex: 0, from: 6, to: 21 }]);
+  assert.equal(block.searchText.slice(result.matches[0].from, result.matches[0].to), search);
+});
+
+test("oversized code fences retain the plain-text fallback", () => {
+  const blocks = renderMarkdownBlocks(`\`\`\`js\n${"const value = 1;\n".repeat(MAX_MARKDOWN_BLOCK_CHARS / 16)}\`\`\``);
+  assert.ok(blocks.every((block) => block.oversized));
+  assert.ok(blocks.every((block) => !block.html.includes("hljs-")));
+});
 
 test("renders common GFM blocks and keeps nested lists together", () => {
   const blocks = renderMarkdownBlocks(`# 标题

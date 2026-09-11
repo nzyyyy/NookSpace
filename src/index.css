@@ -208,6 +208,30 @@
     font-size: 0.88em;
   }
 
+  .markdown-block .hljs-keyword,
+  .markdown-block .hljs-literal,
+  .markdown-block .hljs-selector-tag { color: var(--cm-bool); }
+  .markdown-block .hljs-string,
+  .markdown-block .hljs-regexp,
+  .markdown-block .hljs-addition { color: var(--cm-string); }
+  .markdown-block .hljs-number,
+  .markdown-block .hljs-built_in,
+  .markdown-block .hljs-type { color: var(--cm-number); }
+  .markdown-block .hljs-title,
+  .markdown-block .hljs-attr,
+  .markdown-block .hljs-attribute,
+  .markdown-block .hljs-name,
+  .markdown-block .hljs-selector-class,
+  .markdown-block .hljs-selector-id,
+  .markdown-block .hljs-section { color: var(--primary); }
+  .markdown-block .hljs-comment,
+  .markdown-block .hljs-quote { color: var(--muted-foreground); font-style: italic; }
+  .markdown-block .hljs-meta { color: var(--muted-foreground); }
+  .markdown-block .hljs-deletion { color: var(--destructive); }
+  .markdown-block .hljs-strong { font-weight: 700; }
+  .markdown-block .hljs-emphasis { font-style: italic; }
+  .markdown-block .hljs-link { color: var(--primary); text-decoration: underline; }
+
   .markdown-block a {
     color: var(--primary);
     text-decoration: underline;

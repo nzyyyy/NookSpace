@@ -1,4 +1,28 @@
 import MarkdownIt, { type Env, type Token } from "markdown-it";
+import hljs from "highlight.js/lib/core";
+import python from "highlight.js/lib/languages/python";
+import javascript from "highlight.js/lib/languages/javascript";
+import typescript from "highlight.js/lib/languages/typescript";
+import go from "highlight.js/lib/languages/go";
+import rust from "highlight.js/lib/languages/rust";
+import java from "highlight.js/lib/languages/java";
+import c from "highlight.js/lib/languages/c";
+import cpp from "highlight.js/lib/languages/cpp";
+import json from "highlight.js/lib/languages/json";
+import yaml from "highlight.js/lib/languages/yaml";
+import xml from "highlight.js/lib/languages/xml";
+import css from "highlight.js/lib/languages/css";
+import bash from "highlight.js/lib/languages/bash";
+import sql from "highlight.js/lib/languages/sql";
+import markdownLanguage from "highlight.js/lib/languages/markdown";
+
+for (const [name, language] of Object.entries({
+  python, javascript, typescript, go, rust, java, c, cpp, json, yaml, xml, css, bash, sql,
+  markdown: markdownLanguage,
+})) {
+  hljs.registerLanguage(name, language);
+}
+hljs.registerAliases("shell", { languageName: "bash" });
 
 export const MAX_MARKDOWN_BLOCK_CHARS = 64 * 1024;
 export const MAX_RENDERED_MARKDOWN_BLOCKS = 20_000;
@@ -25,6 +49,16 @@ const markdown = new MarkdownIt({
   html: false,
   linkify: true,
   typographer: false,
+  highlight(code, language) {
+    const name = language.toLowerCase();
+    if (!name || !hljs.getLanguage(name)) return "";
+    try {
+      return hljs.highlight(code, { language: name, ignoreIllegals: true }).value;
+    } catch {
+      // An empty result lets markdown-it escape the original code safely.
+      return "";
+    }
+  },
 });
 
 function externalProtocol(url: string) {
